@@ -8,6 +8,8 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
 <script defer src="https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 <style>
   :root{
     --bg:#0e1116; --bg2:#12161d; --panel:#171c24; --panel2:#1c232e;
@@ -430,11 +432,21 @@
             <select id="examSubject"></select>
           </div>
         </div>
+        <div class="upload-box" style="margin-top:14px">
+          <div class="hint" style="margin-bottom:8px">📄 上传试卷 + 答案解析（支持 Word .docx / PDF），AI 自动识别题目、客观题答案与主观题得分点。</div>
+          <input type="file" id="examPaperFile" accept=".docx,.pdf,.txt,.md" style="display:none" />
+          <div class="row">
+            <button class="btn btn-primary" id="btnPickPaper">📤 选择试卷文件</button>
+            <button class="btn btn-ghost" id="btnParsePaper" style="display:none">🤖 AI 解析试卷</button>
+            <span class="hint" id="paperFileName" style="margin:0;align-self:center"></span>
+          </div>
+          <div class="hint" id="paperParseProgress" style="margin-top:8px"></div>
+        </div>
       </div>
 
       <div class="card">
-        <h3>2 · 试卷题目 <span class="tag">逐题定义</span></h3>
-        <div class="hint" style="margin-bottom:10px">逐题填写题目、满分与评分标准（参考答案 / 得分点）。</div>
+        <h3>2 · 试卷题目 <span class="tag">客观题自动批改 · 主观题 AI 评分</span></h3>
+        <div class="hint" style="margin-bottom:10px">逐题填写题目、满分与评分标准；客观题（选择/填空/判断）标出标准答案即可自动比对，主观题由 AI 按得分点评分。</div>
         <div id="examQuestions"></div>
         <div class="row end" style="margin-top:10px">
           <button class="btn btn-ghost" id="btnAddQuestion">＋ 添加题目</button>
@@ -442,13 +454,16 @@
       </div>
 
       <div class="card">
-        <h3>3 · 学生答卷 <span class="tag">批量</span></h3>
-        <div class="hint" style="margin-bottom:10px">每位学生一份答卷，逐题填写答案。支持「从剪贴板批量导入」。</div>
+        <h3>3 · 学生答卷 <span class="tag">图片批量导入</span></h3>
+        <div class="hint" style="margin-bottom:10px">每位学生一份答卷。支持「上传答卷图片」（AI 视觉识别）、「从剪贴板批量导入」文本。</div>
         <div id="examStudents"></div>
         <div class="row end" style="margin-top:10px">
           <button class="btn btn-ghost" id="btnAddExamStudent">＋ 添加学生</button>
+          <button class="btn btn-ghost" id="btnUploadExamSheets">📷 批量上传答卷图片</button>
           <button class="btn btn-ghost" id="btnPasteExam">从剪贴板批量导入</button>
         </div>
+        <input type="file" id="examSheetFiles" accept="image/*" multiple style="display:none" />
+        <div class="hint" id="examSheetProgress" style="margin-top:8px"></div>
       </div>
 
       <div class="card" style="text-align:center">
@@ -819,6 +834,69 @@ function formatTokens(n){
   if(n>=1000000) return (n/1000000).toFixed(1)+'M';
   if(n>=1000) return (n/1000).toFixed(1)+'k';
   return String(n);
+}
+
+/* ================= 文件文字提取（Word / PDF） ================= */
+async function extractFileText(file){
+  const name = (file.name||'').toLowerCase();
+  if(name.endsWith('.docx')) return await extractDocxText(file);
+  if(name.endsWith('.pdf')) return await extractPdfText(file);
+  if(name.endsWith('.txt') || name.endsWith('.md')) return await file.text();
+  // 旧版 .doc（二进制）不支持，提示用户另存为 .docx
+  if(name.endsWith('.doc')) throw new Error('暂不支持旧版 .doc 格式，请在 Word 中另存为 .docx 后上传');
+  throw new Error('仅支持 .docx / .pdf / .txt 文件');
+}
+async function extractDocxText(file){
+  if(!window.JSZip) throw new Error('JSZip 未加载，请检查网络');
+  const zip = await JSZip.loadAsync(file);
+  const doc = zip.file('word/document.xml');
+  if(!doc) throw new Error('无法读取 docx 内容');
+  const xml = await doc.async('string');
+  // 解析段落：每个 <w:p> 为一段，<w:t> 为文本
+  const paras = xml.split(/<w:p[ >]/).slice(1);
+  const lines = paras.map(p => {
+    const texts = p.match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g) || [];
+    return texts.map(t => t.replace(/<w:t[^>]*>/,'').replace(/<\/w:t>/,'')).join('');
+  });
+  // 去除空段落，保留基本换行
+  return lines.filter(l => l.trim()).join('\n');
+}
+async function extractPdfText(file){
+  if(!window.pdfjsLib) throw new Error('pdf.js 未加载，请检查网络');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data: buf}).promise;
+  const parts = [];
+  for(let i=1;i<=pdf.numPages;i++){
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const text = content.items.map(it => it.str).join(' ');
+    parts.push(text);
+  }
+  return parts.join('\n');
+}
+
+/* ================= 试卷 AI 解析 ================= */
+// 将试卷文字交给 AI，识别题目（客观/主观）、答案、得分点
+async function parseExamPaper(rawText){
+  const sys = '你是一位经验丰富的教研员，擅长解析试卷结构。';
+  const user = '请解析下面这份试卷/答案解析，识别所有题目。对每道题输出：题号、题型（客观题：单选/多选/填空/判断；主观题：简答/计算/论述/作文等）、题目内容、满分、标准答案（客观题必须有明确答案）、得分点（主观题分点列出）。\n\n输出严格 JSON 数组，字段：\n{"num":"题号","type":"题型","objective":true/false,"question":"题目内容","fullScore":数字,"answer":"标准答案（客观题必填）","points":"得分点（主观题，分点）"}\n\n试卷内容：\n'+rawText.slice(0, 12000);
+  const content = await callAI([{role:'system',content:sys},{role:'user',content:user}],{json:true});
+  const arr = parseAIJson(content);
+  if(!Array.isArray(arr)) throw new Error('AI 未返回题目数组');
+  return arr.map((q,i) => ({
+    id: uid(),
+    num: q.num || String(i+1),
+    type: q.type || '主观题',
+    objective: !!q.objective,
+    question: q.question || '',
+    fullScore: Number(q.fullScore) || 0,
+    answer: q.answer || '',
+    reference: q.answer || '',
+    points: q.points || '',
+    wrong: '',
+    note: ''
+  }));
 }
 
 /* ================= 学生答案管理 ================= */
@@ -1397,11 +1475,16 @@ function saveExam(){ try{localStorage.setItem('yjai_exam',JSON.stringify({title:
 function loadExam(){
   try{
     const v=localStorage.getItem('yjai_exam');
-    if(v){const o=JSON.parse(v);if(o&&Array.isArray(o.questions)&&o.questions.length){examState.title=o.title||'';examState.subject=o.subject||'语文';examState.questions=o.questions;examState.students=o.students||[];return true;}}
+    if(v){const o=JSON.parse(v);if(o&&Array.isArray(o.questions)&&o.questions.length){
+      examState.title=o.title||'';examState.subject=o.subject||'语文';
+      // 兼容旧数据：补充 objective/type/answer 字段
+      examState.questions=o.questions.map(q=>({objective:false,type:'主观题',answer:'',...q}));
+      examState.students=o.students||[];return true;
+    }}
   }catch(e){}
   return false;
 }
-function newQuestion(num){ return {id:uid(),num:num,text:'',fullScore:6,reference:'',points:'',wrong:'',note:''}; }
+function newQuestion(num){ return {id:uid(),num:num,text:'',fullScore:6,reference:'',points:'',wrong:'',note:'',objective:false,type:'主观题',answer:''}; }
 function initExam(){
   if(!loadExam()){
     examState.title=''; examState.subject='语文';
@@ -1416,7 +1499,11 @@ function renderExamQuestions(){
   box.innerHTML=examState.questions.map((q,i)=>`
     <div class="stu-item" style="margin-bottom:12px">
       <div class="stu-head">
-        <span class="score-badge score-mid">第 ${q.num} 题</span>
+        <span class="score-badge ${q.objective?'score-good':'score-mid'}">第 ${q.num} 题</span>
+        <select data-q="${q.id}" data-f="objective" style="width:110px;display:inline-block;margin:0 6px;padding:4px 8px">
+          <option value="false" ${!q.objective?'selected':''}>主观题</option>
+          <option value="true" ${q.objective?'selected':''}>客观题</option>
+        </select>
         <span class="grow" style="font-size:13px">满分
           <input type="number" data-q="${q.id}" data-f="fullScore" value="${q.fullScore}" min="0.5" step="0.5" style="width:72px;display:inline-block;margin:0 6px;padding:4px 8px" /> 分
         </span>
@@ -1425,6 +1512,9 @@ function renderExamQuestions(){
       <div class="stu-body">
         <label>题目内容</label>
         <textarea data-q="${q.id}" data-f="text" placeholder="请输入第 ${q.num} 题的题目">${esc(q.text)}</textarea>
+        ${q.objective?`
+        <div style="margin-top:10px"><label>标准答案（客观题自动比对）</label><textarea data-q="${q.id}" data-f="answer" placeholder="例如：C 或 3.14 或 正确">${esc(q.answer||'')}</textarea></div>
+        `:`
         <div class="grid2" style="margin-top:10px">
           <div><label>参考答案</label><textarea data-q="${q.id}" data-f="reference">${esc(q.reference)}</textarea></div>
           <div><label>得分点</label><textarea data-q="${q.id}" data-f="points">${esc(q.points)}</textarea></div>
@@ -1433,6 +1523,7 @@ function renderExamQuestions(){
           <div><label>不得分答案</label><textarea data-q="${q.id}" data-f="wrong">${esc(q.wrong)}</textarea></div>
           <div><label>备注</label><textarea data-q="${q.id}" data-f="note">${esc(q.note)}</textarea></div>
         </div>
+        `}
       </div>
     </div>`).join('');
 }
@@ -1448,10 +1539,14 @@ function renderExamStudents(){
         <button class="btn btn-danger btn-sm" data-s="${s.id}" data-act="dels">删除</button>
       </div>
       <div class="stu-body">
-        ${examState.questions.map(q=>`
-          <label>第 ${q.num} 题答案（满分 ${q.fullScore} 分）</label>
-          <textarea data-s="${s.id}" data-q="${q.id}" data-f="answer" placeholder="请填写第 ${q.num} 题答案">${esc(s.answers[q.id]||'')}</textarea>
-        `).join('')}
+        ${examState.questions.map(q=>{
+          if(q.objective){
+            return `<label>第 ${q.num} 题 · 客观题（满分 ${q.fullScore} 分，自动比对）</label>
+              <input type="text" data-s="${s.id}" data-q="${q.id}" data-f="answer" placeholder="例如：C / 3.14 / 正确" value="${esc(s.answers[q.id]||'')}" style="width:100%;padding:8px 10px;font-size:13px" />`;
+          }
+          return `<label>第 ${q.num} 题 · 主观题（满分 ${q.fullScore} 分）</label>
+          <textarea data-s="${s.id}" data-q="${q.id}" data-f="answer" placeholder="请填写第 ${q.num} 题答案">${esc(s.answers[q.id]||'')}</textarea>`;
+        }).join('')}
       </div>
     </div>`).join('');
 }
@@ -1462,6 +1557,20 @@ async function gradeOneExamQuestion(q, answerText){
   const j=parseAIJson(raw);
   j.score=Number(j.score)||0;
   return j;
+}
+/* 客观题本地比对：答案归一化后精确匹配（支持单选/填空/判断） */
+function gradeObjective(q, answerText){
+  const full = Number(q.fullScore)||0;
+  const std = normalizeAnswer(q.answer);
+  const stu = normalizeAnswer(answerText);
+  if(!std){ return {score:0, comment:'题目未设置标准答案，无法自动批改'}; }
+  if(!stu){ return {score:0, comment:'未作答'}; }
+  if(std === stu){ return {score:full, comment:'正确 ✓'}; }
+  return {score:0, comment:'错误 ✗（标准答案：'+q.answer+'）'};
+}
+function normalizeAnswer(s){
+  if(s==null) return '';
+  return String(s).trim().toUpperCase().replace(/[\s,，。;；:：\u3000]/g,'').replace(/^[（(]/,'').replace(/[）)]$/,'');
 }
 async function runExam(){
   if(!state.settings.apiKey){toast('请先在「设置」中配置 API Key','err');switchView('settings');return;}
@@ -1480,7 +1589,12 @@ async function runExam(){
       const q=qs[qi];
       prog.textContent=`正在批改 ${sname} · 第 ${qi+1}/${qs.length} 题…`;
       try{
-        const r=await gradeOneExamQuestion(q, s.answers[q.id]||'');
+        let r;
+        if(q.objective){
+          r = gradeObjective(q, s.answers[q.id]||'');
+        } else {
+          r = await gradeOneExamQuestion(q, s.answers[q.id]||'');
+        }
         scores[q.id]={score:r.score,comment:r.comment||''};
         total+=r.score;
       }catch(e){ scores[q.id]={score:null,comment:'批改失败: '+e.message}; }
@@ -1571,6 +1685,105 @@ function pasteExamBatch(){
   saveExam(); renderExamStudents();
   toast('已导入 '+cnt+' 名学生答卷','ok');
 }
+
+/* 选择试卷文件 */
+let paperRawText = '';
+function onPickPaper(e){
+  const file = e.target.files && e.target.files[0];
+  if(!file) return;
+  $('#paperFileName').textContent = '已选择：'+file.name;
+  $('#paperParseProgress').textContent = '正在读取文件文字…';
+  $('#paperParseProgress').style.color = 'var(--muted)';
+  extractFileText(file).then(txt=>{
+    paperRawText = txt;
+    if(!txt || !txt.trim()){ $('#paperParseProgress').textContent='未提取到文字（若是扫描版 PDF，暂不支持 OCR）'; $('#paperParseProgress').style.color='var(--amber)'; return; }
+    $('#paperParseProgress').textContent = '已提取 '+txt.length+' 字符，点击「AI 解析试卷」自动识别题目。';
+    $('#paperParseProgress').style.color = 'var(--green)';
+    $('#btnParsePaper').style.display='';
+  }).catch(err=>{
+    $('#paperParseProgress').textContent = '读取失败：'+err.message;
+    $('#paperParseProgress').style.color = 'var(--red)';
+  });
+  e.target.value='';
+}
+/* AI 解析试卷为题目列表 */
+async function onParsePaper(){
+  if(!state.settings.apiKey){toast('请先配置 API Key','err');switchView('settings');return;}
+  if(!paperRawText || !paperRawText.trim()){toast('请先选择并读取试卷文件','err');return;}
+  const btn=$('#btnParsePaper'), prog=$('#paperParseProgress');
+  btn.disabled=true; btn.textContent='⏳ 解析中…';
+  prog.textContent='AI 正在识别题目、客观题答案与主观题得分点…'; prog.style.color='var(--muted)';
+  try{
+    const questions = await parseExamPaper(paperRawText);
+    if(!questions.length){toast('未识别到题目','err');return;}
+    examState.questions = questions;
+    saveExam(); renderExamQuestions(); renderExamStudents();
+    const objCount = questions.filter(q=>q.objective).length;
+    prog.textContent = '✅ 识别到 '+questions.length+' 道题（客观题 '+objCount+' 道，主观题 '+(questions.length-objCount)+' 道），已自动填入，可手动微调。';
+    prog.style.color='var(--green)';
+    toast('试卷解析完成，共 '+questions.length+' 题','ok');
+  }catch(e){
+    prog.textContent='解析失败：'+e.message; prog.style.color='var(--red)';
+  }finally{
+    btn.disabled=false; btn.textContent='🤖 AI 解析试卷';
+  }
+}
+/* 批量上传答卷图片，AI 视觉识别每份答案 */
+function onUploadExamSheets(e){
+  const files = Array.from(e.target.files||[]);
+  if(!files.length) return;
+  if(!examState.questions.length){toast('请先添加/解析试卷题目','err');return;}
+  if(!state.settings.apiKey){toast('请先配置 API Key','err');switchView('settings');return;}
+  const prog=$('#examSheetProgress');
+  prog.textContent='正在读取 '+files.length+' 张答卷图片…'; prog.style.color='var(--muted)';
+  const readers = files.map(f=>new Promise((res,rej)=>{
+    if(f.size>8*1024*1024){rej(new Error('图片过大：'+f.name));return;}
+    const r=new FileReader();
+    r.onload=()=>res({name:f.name, dataUrl:r.result});
+    r.onerror=()=>rej(new Error('读取失败：'+f.name));
+    r.readAsDataURL(f);
+  }));
+  Promise.all(readers).then(async images=>{
+    prog.textContent='AI 正在识别 '+images.length+' 份答卷答案…'; prog.style.color='var(--muted)';
+    for(let i=0;i<images.length;i++){
+      prog.textContent='识别答卷 '+(i+1)+'/'+images.length+'：'+images[i].name;
+      try{
+        const answers = await recognizeSheetAnswers(images[i].dataUrl);
+        // 学生名取文件名（去掉扩展名），可后续手动改
+        const name = images[i].name.replace(/\.[^.]+$/,'');
+        examState.students.push({id:uid(), name:name, answers});
+      }catch(err){
+        examState.students.push({id:uid(), name:images[i].name.replace(/\.[^.]+$/,''), answers:{}});
+      }
+    }
+    saveExam(); renderExamStudents();
+    prog.textContent='✅ 已识别 '+images.length+' 份答卷，请核对每份的答案（AI 识别可能有误差）。';
+    prog.style.color='var(--green)';
+    toast('已导入 '+images.length+' 份答卷图片','ok');
+  }).catch(err=>{
+    prog.textContent='导入失败：'+err.message; prog.style.color='var(--red)';
+  });
+  e.target.value='';
+}
+/* 单张答卷图片 → AI 视觉识别各题答案 */
+async function recognizeSheetAnswers(imageDataUrl){
+  const qs = examState.questions;
+  const qDesc = qs.map((q,i)=>'第'+(i+1)+'题：'+(q.text||'').slice(0,80)).join('\n');
+  const sys='你是答卷识别助手，从学生答卷图片中逐题提取答案。只输出 JSON。';
+  const user='下面是一张学生答卷图片。试卷题目顺序如下：\n'+qDesc+'\n\n请按题号顺序识别学生每一题的作答内容。\n输出严格 JSON 对象，键为题号（从1开始的数字字符串），值为该题答案文本：\n{"1":"第一题答案","2":"第二题答案",...}\n无法识别的题可留空字符串。';
+  const content = [
+    {type:'text', text:user},
+    {type:'image_url', image_url:{url:imageDataUrl}}
+  ];
+  const raw = await callAI([{role:'system',content:sys},{role:'user',content:content}],{json:true});
+  const j = parseAIJson(raw);
+  const answers = {};
+  qs.forEach((q,i)=>{
+    const key = String(i+1);
+    answers[q.id] = (j && j[key]) ? String(j[key]) : '';
+  });
+  return answers;
+}
 function bindExamEvents(){
   $('#examTitle').addEventListener('input',e=>{examState.title=e.target.value;saveExam();});
   $('#examSubject').addEventListener('change',e=>{examState.subject=e.target.value;saveExam();});
@@ -1583,6 +1796,13 @@ function bindExamEvents(){
     const q=examState.questions.find(x=>x.id===el.dataset.q); if(!q) return;
     if(el.dataset.f==='fullScore') q.fullScore=Number(el.value)||0; else q[el.dataset.f]=el.value;
     saveExam();
+  });
+  // 切换客观/主观题型：更新状态并重渲染
+  $('#examQuestions').addEventListener('change',e=>{
+    const el=e.target; if(!el.dataset.q || el.dataset.f!=='objective') return;
+    const q=examState.questions.find(x=>x.id===el.dataset.q); if(!q) return;
+    q.objective = el.value==='true';
+    saveExam(); renderExamQuestions();
   });
   $('#examQuestions').addEventListener('click',e=>{
     const b=e.target.closest('button[data-act="delq"]'); if(!b) return;
@@ -1609,6 +1829,13 @@ function bindExamEvents(){
   $('#btnStartExam').onclick=runExam;
   $('#btnExamCsv').onclick=exportExamCsv;
   $('#btnExamMd').onclick=exportExamMd;
+  // 试卷上传 + AI 解析
+  $('#btnPickPaper').onclick=()=>$('#examPaperFile').click();
+  $('#examPaperFile').addEventListener('change',onPickPaper);
+  $('#btnParsePaper').onclick=onParsePaper;
+  // 答卷图片批量导入
+  $('#btnUploadExamSheets').onclick=()=>$('#examSheetFiles').click();
+  $('#examSheetFiles').addEventListener('change',onUploadExamSheets);
 }
 
 /* ================= 学情分析 ================= */
