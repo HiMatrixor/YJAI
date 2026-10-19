@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>YJAI · AI 阅卷助手 — 产品说明与使用指南</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Segoe UI","Microsoft YaHei",sans-serif;background:#f5f7fa;color:#1f2733;line-height:1.75}
+  .wrap{max-width:860px;margin:0 auto;padding:32px 24px 80px}
+  header{background:linear-gradient(135deg,#4f8cff,#6aa1ff);color:#fff;border-radius:16px;padding:36px 32px;margin-bottom:28px}
+  header h1{font-size:28px;margin-bottom:8px}
+  header .meta{font-size:14px;opacity:.92}
+  .badge{display:inline-block;background:rgba(255,255,255,.2);border-radius:20px;padding:2px 12px;font-size:12px;margin-right:8px}
+  h2{font-size:22px;margin:36px 0 16px;padding-left:12px;border-left:4px solid #4f8cff}
+  h3{font-size:17px;margin:22px 0 10px;color:#2b3a52}
+  p{margin:8px 0}
+  ul,ol{margin:8px 0 8px 24px}
+  li{margin:4px 0}
+  .card{background:#fff;border:1px solid #e6ebf2;border-radius:12px;padding:20px 24px;margin:14px 0}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+  th,td{border:1px solid #e6ebf2;padding:10px 12px;text-align:left}
+  th{background:#f0f4fb;font-weight:600}
+  .hl{background:#eef4ff;border-radius:8px;padding:12px 16px;margin:12px 0;font-size:14px;border-left:3px solid #4f8cff}
+  .warn{background:#fff8e6;border-radius:8px;padding:12px 16px;margin:12px 0;font-size:14px;border-left:3px solid #e6a23c}
+  code{background:#eef1f6;padding:2px 6px;border-radius:4px;font-family:"Cascadia Code",Consolas,monospace;font-size:13px}
+  .tag{display:inline-block;background:#eef4ff;color:#4f8cff;border-radius:4px;padding:0 8px;font-size:12px;margin-left:6px;font-weight:600}
+  a{color:#4f8cff;text-decoration:none}
+  footer{text-align:center;color:#8b98a9;font-size:13px;margin-top:40px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>YJAI · AI 阅卷助手</h1>
+  <div class="meta">
+    <span class="badge">v1.1.0</span>
+    <span class="badge">买断制</span>
+    <span class="badge">原价 29.9 · 早鸟 9.9</span>
+  </div>
+  <div class="meta" style="margin-top:10px">产品说明与使用指南 · 更新日期 2026-10-19</div>
+</header>
+
+<h2>一、产品简介</h2>
+<p><b>YJAI · AI 阅卷助手</b> 是一款面向教师与阅卷人员的 Windows 桌面软件，用 AI 自动化批改试卷的主观题与客观题，大幅降低阅卷工作量。</p>
+<ul>
+  <li>🔒 <b>本地运行</b>：阅卷数据与密钥均保存在本机，不经过第三方服务器</li>
+  <li>💰 <b>一次买断</b>：无订阅、无积分充值、无隐藏费用</li>
+  <li>🖥️ <b>多模型兼容</b>：支持 OpenAI / DeepSeek / 通义千问 / 智谱 / Kimi 等主流 AI 服务</li>
+  <li>🆓 <b>3 天免费试用</b>：浏览器自动化阅卷提供 3 天试用</li>
+</ul>
+
+<h2>二、软件安装</h2>
+<ol>
+  <li>下载安装包 <code>YJAI-Setup-x.x.x.exe</code></li>
+  <li>双击运行，按提示选择安装路径（可选），完成安装</li>
+  <li>首次运行时 Windows 可能弹出 SmartScreen 提示（因未做代码签名），点击「仍要运行」即可</li>
+</ol>
+
+<h2>三、四大核心功能</h2>
+
+<h3>1. 🌐 浏览器自动化阅卷（专业版）</h3>
+<p>接管网页阅卷平台，自动完成「截图 → AI 评分 → 填分 → 提交」全流程，实现无人值守阅卷。</p>
+<div class="card">
+<ol>
+  <li>选择浏览器内核（Chrome / Edge）并输入阅卷平台网址</li>
+  <li>框选「题目区域」「分数输入框」「提交按钮」等区域</li>
+  <li>配置 AI 评分标准（题目、满分、参考答案、得分点）</li>
+  <li>选择批阅模式：<b>顶尖</b>（全自动无人值守）/ <b>稳健</b>（确认后提交）/ <b>标准</b>（仅评分不填分）</li>
+  <li>点击「自动运行」，实时监控进度</li>
+</ol>
+</div>
+<div class="hl">浏览器页面支持独立窗口打开与缩放，方便完整查看被遮挡的内容。</div>
+
+<h3>2. ✏️ 智能阅卷（单题批改）</h3>
+<p>针对单道主观题，按评分标准由 AI 精准评分，附扣分理由、评语与改进建议。</p>
+<div class="card">
+<ol>
+  <li>填写题目、满分、参考答案、得分点（可粘贴到「AI 评分标准」输入框）</li>
+  <li>粘贴学生答案（文字或截图）</li>
+  <li>点击「AI 评分」，自动给出分数与评语</li>
+</ol>
+</div>
+
+<h3>3. 📝 整卷阅卷（批量批改）</h3>
+<p>支持整套试卷（多题 × 多学生）一次完成，自动生成总分、排名、平均分、及格率，可导出 Excel / Markdown。</p>
+<div class="card">
+<ol>
+  <li><b>试卷信息</b>：填写名称、科目；📄 上传试卷文件（支持 <code>.docx</code> / <code>.pdf</code> / <code>.txt</code> / <code>.md</code>），点「AI 解析试卷」自动识别题目、客观题答案与主观题得分点</li>
+  <li><b>试卷题目</b>：客观题（选择/填空/判断）标出标准答案本地自动比对；主观题由 AI 按得分点评分</li>
+  <li><b>学生答卷</b>：📷 批量上传答卷图片（AI 视觉识别）或从剪贴板批量导入文本</li>
+  <li><b>开始整卷阅卷</b>：客观题自动比对、主观题 AI 评分，自动汇总成绩</li>
+</ol>
+</div>
+
+<h3>4. 📊 学情分析</h3>
+<p>自动聚合失分点，生成成绩分布与学情报告，辅助教学改进，支持导出报告。</p>
+
+<h2>四、授权激活</h2>
+<p>YJAI 采用 <b>买断制</b>，通过「解锁串」激活专业版功能（浏览器自动化阅卷）。</p>
+
+<h3>免费版 vs 专业版</h3>
+<table>
+  <tr><th>功能</th><th>免费版</th><th>专业版</th></tr>
+  <tr><td>智能阅卷（单题）</td><td>✅</td><td>✅</td></tr>
+  <tr><td>整卷阅卷</td><td>✅</td><td>✅</td></tr>
+  <tr><td>学情分析</td><td>✅</td><td>✅</td></tr>
+  <tr><td>浏览器自动化阅卷</td><td>❌（3 天试用）</td><td>✅</td></tr>
+</table>
+
+<h3>激活流程（解锁串机制）</h3>
+<ol>
+  <li>打开「设置 → 授权激活」，查看并复制<b>本机机器码</b></li>
+  <li>点击「购买授权」，扫码支付</li>
+  <li>将机器码发送给群主（<b>QQ 群：1105769761</b>）</li>
+  <li>群主返回「解锁串」（<code>XXXX-XXXX-XXXX-XXXX</code> 格式）</li>
+  <li>在授权激活中输入解锁串，软件本地自动派生最终激活码并完成激活</li>
+</ol>
+<div class="warn">⚠️ <b>解锁串与机器码绑定，一机一码</b>，换机需重新获取，不可转售。</div>
+
+<h3>试用期</h3>
+<p>首次启动起，浏览器自动化阅卷提供 <b>3 天免费试用</b>，试用结束后需买断授权才能继续使用。</p>
+
+<h2>五、AI 服务配置</h2>
+<p>在「设置」中配置 AI 服务，支持：</p>
+<ul>
+  <li><b>API 地址</b>：填写服务商接口地址</li>
+  <li><b>API Key</b>：填写你的密钥</li>
+  <li><b>模型名称</b>：填写模型（如 <code>gpt-4o</code>、<code>deepseek-chat</code>、<code>qwen-plus</code> 等）</li>
+</ul>
+<div class="hl">Token 消耗量实时显示在页面右下角，方便掌握用量。</div>
+
+<h2>六、数据与隐私</h2>
+<ul>
+  <li>所有阅卷记录、模板、密钥均保存在本机浏览器存储中</li>
+  <li>试卷与学生答卷仅在调用 AI 评分时按需发送至你配置的 AI 服务</li>
+  <li>软件本身不上传任何数据至 YJAI 服务器（无后端）</li>
+</ul>
+
+<h2>七、常见问题（FAQ）</h2>
+<div class="card">
+  <p><b>Q1：试卷上传支持哪些格式？</b><br/>支持 <code>.docx</code>、<code>.pdf</code>、<code>.txt</code>、<code>.md</code>。仅支持「文字版」文件；扫描图片型 PDF 需先 OCR；<code>.doc</code> 旧格式需另存为 <code>.docx</code>。</p>
+  <p><b>Q2：客观题如何自动批改？</b><br/>客观题填入标准答案后，软件本地归一化（去空格/标点/大小写）精确比对，秒出结果，不消耗 token。目前为严格比对（多选需顺序一致），判分后可在成绩里手动微调。</p>
+  <p><b>Q3：答卷图片识别准确吗？</b><br/>AI 视觉识别手写答卷可能存在误差，识别后建议老师快速核对一遍再确认。</p>
+  <p><b>Q4：换电脑后激活码还能用吗？</b><br/>解锁串与机器码绑定，换电脑需重新获取解锁串；重装系统导致机器码变化，也需重新获取。</p>
+  <p><b>Q5：软件如何更新？</b><br/>软件启动后自动静默检查更新，发现新版会提示下载；也可在「设置 → 关于与更新」手动检查。</p>
+  <p><b>Q6：数据安全吗？</b><br/>数据保存在本机，软件无后端服务器，不上传你的阅卷数据。</p>
+</div>
+
+<h2>八、联系方式</h2>
+<ul>
+  <li>💬 <b>QQ 群</b>：1105769761</li>
+  <li>支付购买：软件内「设置 → 授权激活 → 购买授权」扫码支付后进群获取解锁串</li>
+</ul>
+
+<h2>九、版本记录</h2>
+<table>
+  <tr><th>版本</th><th>日期</th><th>主要更新</th></tr>
+  <tr><td>v1.1.0</td><td>2026-10-19</td><td>试卷上传解析、客观题自动批改、答卷图片批量导入</td></tr>
+  <tr><td>v1.0.3</td><td>2026-10-19</td><td>解锁串激活机制（绑定机器码，本地派生最终激活码）</td></tr>
+  <tr><td>v1.0.2</td><td>2026-10-19</td><td>激活密钥加固、仓库公开、自动更新链路打通</td></tr>
+  <tr><td>v1.0.1</td><td>2026-10-19</td><td>自动更新功能、NSIS 安装包</td></tr>
+</table>
+
+<footer>YJAI · AI 阅卷助手 · 把重复劳动交给 AI，把时间留给教学</footer>
+</div>
+</body>
+</html>

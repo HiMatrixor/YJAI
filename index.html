@@ -88,6 +88,10 @@
   .btn-danger{background:transparent;color:var(--red);border:1px solid rgba(248,81,73,.4)}
   .btn-danger:hover{background:rgba(248,81,73,.1)}
   .btn-sm{padding:5px 12px;font-size:12px}
+  .seg{display:inline-flex;background:var(--panel2);border:1px solid var(--border2);border-radius:10px;padding:4px;gap:4px}
+  .seg .seg-btn{background:transparent;border:none;color:var(--muted);padding:7px 16px;border-radius:7px;cursor:pointer;font-size:13px}
+  .seg .seg-btn.active{background:var(--accent);color:#fff}
+  .seg .seg-btn:hover:not(.active){color:var(--text)}
   .btn.picking{background:var(--accent);color:#fff;border-color:var(--accent);box-shadow:0 0 0 3px rgba(79,140,255,.25);animation:pulse 1s ease-in-out infinite}
   @keyframes pulse{0%,100%{box-shadow:0 0 0 3px rgba(79,140,255,.25)}50%{box-shadow:0 0 0 6px rgba(79,140,255,.12)}}
   .row{display:flex;gap:12px;flex-wrap:wrap}
@@ -221,7 +225,7 @@
   </nav>
   <div class="foot">
     <button class="theme-toggle" id="themeToggle"><span class="ic">🌙</span><span id="themeToggleText">深色模式</span></button>
-    <div>YJAI v1.0 · 本地运行<br/>数据仅保存在本机</div>
+    <div>YJAI <span id="footVersion">v1.0</span> · 本地运行<br/>数据仅保存在本机</div>
   </div>
 </aside>
 
@@ -368,34 +372,59 @@
       </div>
 
       <div class="card">
-        <h3>2 · 填写题目与评分标准</h3>
-        <label>题目内容</label>
-        <textarea id="gradeQuestion" placeholder="在此输入题目内容，例如：请简述光合作用的过程及其意义。"></textarea>
-        <div class="grid2" style="margin-top:12px">
-          <div>
-            <label>参考答案</label>
-            <textarea id="gradeReference" placeholder="输入参考答案 / 标准答案"></textarea>
+        <h3>2 · 填写题目与评分标准 <span class="tag">手动 / 上传试卷</span></h3>
+        <div class="seg" id="gradeInputMode" style="margin-bottom:14px">
+          <button class="btn seg-btn active" data-mode="manual">✍️ 手动输入</button>
+          <button class="btn seg-btn" data-mode="upload">📤 上传试卷文件</button>
+        </div>
+
+        <!-- 上传试卷面板 -->
+        <div id="gradeUploadPanel" style="display:none">
+          <div class="hint" style="margin-bottom:10px">上传试卷 + 答案解析（支持 Word .docx / PDF / txt），AI 自动识别题目、参考答案与得分点并填入下方，可手动修改。</div>
+          <input type="file" id="gradePaperFile" accept=".docx,.pdf,.txt,.md" style="display:none" />
+          <div class="row">
+            <button class="btn btn-primary" id="btnPickGradePaper">📤 选择试卷文件</button>
+            <button class="btn btn-ghost" id="btnParseGradePaper" style="display:none">🤖 AI 解析</button>
+            <span class="hint" id="gradePaperFileName" style="margin:0;align-self:center"></span>
           </div>
-          <div>
-            <label>得分点（分点列出，可标注分值）</label>
-            <textarea id="gradePoints" placeholder="1. 答出光反应与暗反应（2分）&#10;2. 答出场所与产物（2分）&#10;3. 答出意义（2分）"></textarea>
+          <div class="hint" id="gradePaperProgress" style="margin-top:8px"></div>
+          <div class="hint" style="margin-top:10px">解析后会识别出多道题，默认取第一道填入；如需切换其他题，点击「AI 解析」后在下方题目下拉选择。</div>
+          <div id="gradeParsedPicker" style="display:none;margin-top:10px">
+            <label>选择要批改的题目</label>
+            <select id="gradeParsedSelect"></select>
           </div>
         </div>
-        <div class="grid2" style="margin-top:12px">
-          <div>
-            <label>不得分答案（错误典型）</label>
-            <textarea id="gradeWrong" placeholder="分点列出不应得分的典型错误答案"></textarea>
+
+        <!-- 手动输入面板 -->
+        <div id="gradeManualPanel">
+          <label>题目内容</label>
+          <textarea id="gradeQuestion" placeholder="在此输入题目内容，例如：请简述光合作用的过程及其意义。"></textarea>
+          <div class="grid2" style="margin-top:12px">
+            <div>
+              <label>参考答案</label>
+              <textarea id="gradeReference" placeholder="输入参考答案 / 标准答案"></textarea>
+            </div>
+            <div>
+              <label>得分点（分点列出，可标注分值）</label>
+              <textarea id="gradePoints" placeholder="1. 答出光反应与暗反应（2分）&#10;2. 答出场所与产物（2分）&#10;3. 答出意义（2分）"></textarea>
+            </div>
           </div>
-          <div>
-            <label>评卷备注（注意事项）</label>
-            <textarea id="gradeNote" placeholder="例如：关键术语写错不得分；意思对即可给分等"></textarea>
+          <div class="grid2" style="margin-top:12px">
+            <div>
+              <label>不得分答案（错误典型）</label>
+              <textarea id="gradeWrong" placeholder="分点列出不应得分的典型错误答案"></textarea>
+            </div>
+            <div>
+              <label>评卷备注（注意事项）</label>
+              <textarea id="gradeNote" placeholder="例如：关键术语写错不得分；意思对即可给分等"></textarea>
+            </div>
           </div>
         </div>
       </div>
 
       <div class="card">
         <h3>3 · 输入学生答案 <span class="tag">可批量</span></h3>
-        <div class="hint" style="margin-bottom:10px">每位学生一份答案。支持文本输入，或上传学生手写答案的图片（AI 视觉识别）。</div>
+        <div class="hint" style="margin-bottom:10px">每位学生一份答案，支持文本输入或上传手写答案图片（AI 视觉识别）。<b>请在答卷上写清姓名或考号</b>，软件会自动识别并用于对应与导出。</div>
         <div id="stuList"></div>
         <div class="row end" style="margin-top:12px">
           <button class="btn btn-ghost" id="btnAddStudent">＋ 添加学生</button>
@@ -432,8 +461,12 @@
             <select id="examSubject"></select>
           </div>
         </div>
-        <div class="upload-box" style="margin-top:14px">
-          <div class="hint" style="margin-bottom:8px">📄 上传试卷 + 答案解析（支持 Word .docx / PDF），AI 自动识别题目、客观题答案与主观题得分点。</div>
+        <div class="seg" id="examInputMode" style="margin-top:14px">
+          <button class="btn seg-btn active" data-mode="manual">✍️ 手动录入题目</button>
+          <button class="btn seg-btn" data-mode="upload">📤 上传试卷文件</button>
+        </div>
+        <div class="upload-box" id="examUploadBox" style="margin-top:14px;display:none">
+          <div class="hint" style="margin-bottom:8px">上传试卷 + 答案解析（支持 Word .docx / PDF / txt），AI 自动识别题目、客观题答案与主观题得分点，填入后可手动修改。</div>
           <input type="file" id="examPaperFile" accept=".docx,.pdf,.txt,.md" style="display:none" />
           <div class="row">
             <button class="btn btn-primary" id="btnPickPaper">📤 选择试卷文件</button>
@@ -455,7 +488,7 @@
 
       <div class="card">
         <h3>3 · 学生答卷 <span class="tag">图片批量导入</span></h3>
-        <div class="hint" style="margin-bottom:10px">每位学生一份答卷。支持「上传答卷图片」（AI 视觉识别）、「从剪贴板批量导入」文本。</div>
+        <div class="hint" style="margin-bottom:10px">每位学生一份答卷。<b>请在答卷上写清姓名或考号</b>，AI 会自动识别并用于对应与导出。支持「上传答卷图片」（AI 视觉识别）、「从剪贴板批量导入」文本。</div>
         <div id="examStudents"></div>
         <div class="row end" style="margin-top:10px">
           <button class="btn btn-ghost" id="btnAddExamStudent">＋ 添加学生</button>
@@ -913,12 +946,12 @@ function renderStudents(){
     <div class="stu-item">
       <div class="stu-head">
         <span style="font-size:12px;color:var(--muted)">#${i+1}</span>
-        <input type="text" placeholder="学生姓名（可选）" value="${esc(s.name)}" data-id="${s.id}" data-f="name" />
+        <input type="text" placeholder="姓名 / 考号（可选，AI 可自动识别）" value="${esc(s.name)}" data-id="${s.id}" data-f="name" />
         <label class="switch" style="margin:0"><input type="file" accept="image/*" data-id="${s.id}" data-f="img" style="display:none"/>📷 上传答案图片</label>
         <button class="btn btn-ghost btn-sm" data-id="${s.id}" data-f="del">删除</button>
       </div>
       <div class="stu-body">
-        <textarea placeholder="粘贴学生答案…" data-id="${s.id}" data-f="text">${esc(s.text)}</textarea>
+        <textarea placeholder="粘贴学生答案…（答案首行可写姓名/考号，AI 会自动识别）" data-id="${s.id}" data-f="text">${esc(s.text)}</textarea>
         ${s.images.length?`<div class="img-preview">${s.images.map((im,j)=>`<img class="thumb" src="${im}" data-id="${s.id}" data-img="${j}" title="点击删除图片" />`).join('')}</div>`:''}
       </div>
     </div>`).join('');
@@ -955,6 +988,63 @@ function batchPaste(){
   state.students=[];
   parts.forEach(p=>addStudent({text:p}));
   toast('已导入 '+parts.length+' 份答案');
+}
+
+/* ================= 智能阅卷：上传试卷文件解析 ================= */
+let gradePaperRawText = '';
+let gradeParsedQuestions = [];   // 解析出的多道题，供下拉切换
+function onPickGradePaper(e){
+  const file = e.target.files && e.target.files[0];
+  if(!file) return;
+  $('#gradePaperFileName').textContent = '已选择：'+file.name;
+  $('#gradePaperProgress').textContent = '正在读取文件文字…';
+  $('#gradePaperProgress').style.color = 'var(--muted)';
+  extractFileText(file).then(txt=>{
+    gradePaperRawText = txt;
+    if(!txt || !txt.trim()){ $('#gradePaperProgress').textContent='未提取到文字（若是扫描版 PDF，暂不支持 OCR）'; $('#gradePaperProgress').style.color='var(--amber)'; return; }
+    $('#gradePaperProgress').textContent = '已提取 '+txt.length+' 字符，点击「AI 解析」自动识别题目。';
+    $('#gradePaperProgress').style.color = 'var(--green)';
+    $('#btnParseGradePaper').style.display='';
+  }).catch(err=>{
+    $('#gradePaperProgress').textContent = '读取失败：'+err.message;
+    $('#gradePaperProgress').style.color = 'var(--red)';
+  });
+  e.target.value='';
+}
+async function onParseGradePaper(){
+  if(!state.settings.apiKey){toast('请先配置 API Key','err');switchView('settings');return;}
+  if(!gradePaperRawText || !gradePaperRawText.trim()){toast('请先选择并读取试卷文件','err');return;}
+  const btn=$('#btnParseGradePaper'), prog=$('#gradePaperProgress');
+  btn.disabled=true; btn.textContent='⏳ 解析中…';
+  prog.textContent='AI 正在识别题目、参考答案与得分点…'; prog.style.color='var(--muted)';
+  try{
+    const questions = await parseExamPaper(gradePaperRawText);
+    if(!questions.length){toast('未识别到题目','err');return;}
+    gradeParsedQuestions = questions;
+    // 填入下拉选择器
+    const sel=$('#gradeParsedSelect');
+    sel.innerHTML = questions.map((q,i)=>`<option value="${i}">第 ${q.num} 题 · ${esc(q.type||'主观题')} · ${q.question.slice(0,40)}${q.question.length>40?'…':''}</option>`).join('');
+    $('#gradeParsedPicker').style.display='';
+    sel.onchange=()=>applyGradeParsedQuestion(+sel.value);
+    applyGradeParsedQuestion(0);  // 默认第一题
+    prog.textContent = '✅ 识别到 '+questions.length+' 道题，已填入第一题，可在下拉切换或手动修改。';
+    prog.style.color='var(--green)';
+    toast('试卷解析完成，共 '+questions.length+' 题','ok');
+  }catch(e){
+    prog.textContent='解析失败：'+e.message; prog.style.color='var(--red)';
+  }finally{
+    btn.disabled=false; btn.textContent='🤖 AI 解析';
+  }
+}
+function applyGradeParsedQuestion(idx){
+  const q = gradeParsedQuestions[idx]; if(!q) return;
+  $('#gradeQuestion').value = q.question || '';
+  $('#gradeReference').value = q.reference || q.answer || '';
+  $('#gradePoints').value = q.points || '';
+  $('#gradeWrong').value = q.wrong || '';
+  $('#gradeNote').value = q.note || '';
+  // 满分：若识别到 fullScore 则填入
+  if(q.fullScore) $('#gradeFullScore').value = q.fullScore;
 }
 
 /* ================= 评分标准 ================= */
@@ -1061,7 +1151,10 @@ async function runGrading(){
     prog.textContent=`正在批改第 ${i+1}/${valid.length} 份…`;
     try{
       const r=await gradeOneStudent(valid[i]);
-      const rec={id:uid(),student:valid[i].name||('学生'+(i+1)),subject,
+      // 学生名称为空时，尝试从答案首行自动识别姓名/考号
+      let sname = valid[i].name;
+      if(!sname) sname = extractStudentName(valid[i].text) || ('学生'+(i+1));
+      const rec={id:uid(),student:sname,subject,
         question:$('#gradeQuestion').value.trim().slice(0,80),
         score:r.score,fullScore:r.fullScore||full,rate:r.rate,
         details:r.details,deduction:r.deduction,comment:r.comment,suggestion:r.suggestion,
@@ -1535,7 +1628,7 @@ function renderExamStudents(){
     <div class="stu-item" style="margin-bottom:12px">
       <div class="stu-head">
         <span style="font-size:12px;color:var(--muted)">#${si+1}</span>
-        <input type="text" placeholder="学生姓名" data-s="${s.id}" data-f="name" value="${esc(s.name)}" />
+        <input type="text" placeholder="姓名 / 考号（可选，AI 可自动识别）" data-s="${s.id}" data-f="name" value="${esc(s.name)}" />
         <button class="btn btn-danger btn-sm" data-s="${s.id}" data-act="dels">删除</button>
       </div>
       <div class="stu-body">
@@ -1572,6 +1665,19 @@ function normalizeAnswer(s){
   if(s==null) return '';
   return String(s).trim().toUpperCase().replace(/[\s,，。;；:：\u3000]/g,'').replace(/^[（(]/,'').replace(/[）)]$/,'');
 }
+/* 从答案文本首行尝试提取姓名/考号（用于减少学生信息录入） */
+function extractStudentName(text){
+  if(!text) return '';
+  const lines = String(text).split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+  if(!lines.length) return '';
+  const first = lines[0];
+  // 若首行是类似「姓名：张三」「考号：123456」「张三 20230101」等，提取
+  let m = first.match(/^(?:姓名|名字|学生|考号|学号|座号|编号)\s*[:：]\s*([^\s,，;；]{1,20})/);
+  if(m) return m[1];
+  m = first.match(/^([\u4e00-\u9fa5]{2,4})\s*(?:[0-9]{4,}[0-9]*)?$/);
+  if(m && /^[\u4e00-\u9fa5]/.test(m[1])) return m[1];
+  return '';
+}
 async function runExam(){
   if(!state.settings.apiKey){toast('请先在「设置」中配置 API Key','err');switchView('settings');return;}
   const qs=examState.questions.filter(q=>q.text.trim());
@@ -1583,7 +1689,8 @@ async function runExam(){
   const fullTotal=qs.reduce((a,b)=>a+(Number(b.fullScore)||0),0);
   examState.results=[];
   for(let si=0;si<sts.length;si++){
-    const s=sts[si], sname=s.name||('学生'+(si+1));
+    const s=sts[si];
+    let sname = s.name || ('学生'+(si+1));
     let total=0; const scores={};
     for(let qi=0;qi<qs.length;qi++){
       const q=qs[qi];
@@ -1748,10 +1855,11 @@ function onUploadExamSheets(e){
     for(let i=0;i<images.length;i++){
       prog.textContent='识别答卷 '+(i+1)+'/'+images.length+'：'+images[i].name;
       try{
-        const answers = await recognizeSheetAnswers(images[i].dataUrl);
-        // 学生名取文件名（去掉扩展名），可后续手动改
-        const name = images[i].name.replace(/\.[^.]+$/,'');
-        examState.students.push({id:uid(), name:name, answers});
+        const r = await recognizeSheetAnswers(images[i].dataUrl);
+        // 优先用识别出的姓名/考号，其次取文件名（去掉扩展名）
+        let name = r.name || (r.examNo ? ('考号 '+r.examNo) : '');
+        if(!name) name = images[i].name.replace(/\.[^.]+$/,'');
+        examState.students.push({id:uid(), name:name, answers:r.answers});
       }catch(err){
         examState.students.push({id:uid(), name:images[i].name.replace(/\.[^.]+$/,''), answers:{}});
       }
@@ -1765,24 +1873,27 @@ function onUploadExamSheets(e){
   });
   e.target.value='';
 }
-/* 单张答卷图片 → AI 视觉识别各题答案 */
+/* 单张答卷图片 → AI 视觉识别姓名考号 + 各题答案 */
 async function recognizeSheetAnswers(imageDataUrl){
   const qs = examState.questions;
   const qDesc = qs.map((q,i)=>'第'+(i+1)+'题：'+(q.text||'').slice(0,80)).join('\n');
-  const sys='你是答卷识别助手，从学生答卷图片中逐题提取答案。只输出 JSON。';
-  const user='下面是一张学生答卷图片。试卷题目顺序如下：\n'+qDesc+'\n\n请按题号顺序识别学生每一题的作答内容。\n输出严格 JSON 对象，键为题号（从1开始的数字字符串），值为该题答案文本：\n{"1":"第一题答案","2":"第二题答案",...}\n无法识别的题可留空字符串。';
+  const sys='你是答卷识别助手，从学生答卷图片中提取姓名/考号和各题答案。只输出 JSON。';
+  const user='下面是一张学生答卷图片。试卷题目顺序如下：\n'+qDesc+'\n\n请先识别答卷上的「姓名」和「考号」（若没有则留空字符串），再按题号顺序识别学生每一题的作答内容。\n输出严格 JSON 对象：\n{"name":"姓名","examNo":"考号","answers":{"1":"第一题答案","2":"第二题答案",...}}\n无法识别的题可留空字符串。';
   const content = [
     {type:'text', text:user},
     {type:'image_url', image_url:{url:imageDataUrl}}
   ];
   const raw = await callAI([{role:'system',content:sys},{role:'user',content:content}],{json:true});
   const j = parseAIJson(raw);
+  const name = (j && j.name) ? String(j.name).trim() : '';
+  const examNo = (j && j.examNo) ? String(j.examNo).trim() : '';
   const answers = {};
   qs.forEach((q,i)=>{
     const key = String(i+1);
-    answers[q.id] = (j && j[key]) ? String(j[key]) : '';
+    const a = (j && j.answers && j.answers[key]) ? String(j.answers[key]) : (j && j[key] ? String(j[key]) : '');
+    answers[q.id] = a;
   });
-  return answers;
+  return {name, examNo, answers};
 }
 function bindExamEvents(){
   $('#examTitle').addEventListener('input',e=>{examState.title=e.target.value;saveExam();});
@@ -1836,6 +1947,11 @@ function bindExamEvents(){
   // 答卷图片批量导入
   $('#btnUploadExamSheets').onclick=()=>$('#examSheetFiles').click();
   $('#examSheetFiles').addEventListener('change',onUploadExamSheets);
+  // 整卷阅卷：手动 / 上传试卷切换
+  $('#examInputMode').addEventListener('click',e=>{
+    const b=e.target.closest('.seg-btn'); if(!b) return;
+    setExamInputMode(b.dataset.mode);
+  });
 }
 
 /* ================= 学情分析 ================= */
@@ -1990,6 +2106,25 @@ function bindEvents(){
   });
   $('#gradeTemplate').addEventListener('change',e=>{if(e.target.value)applyTemplate(e.target.value);});
   $('#tplModal').addEventListener('click',e=>{if(e.target===e.target.closest('.modal-mask'))$('#tplModal').classList.remove('show');});
+  // 智能阅卷：手动 / 上传试卷切换
+  $('#gradeInputMode').addEventListener('click',e=>{
+    const b=e.target.closest('.seg-btn'); if(!b) return;
+    setGradeInputMode(b.dataset.mode);
+  });
+  $('#btnPickGradePaper').onclick=()=>$('#gradePaperFile').click();
+  $('#gradePaperFile').addEventListener('change',onPickGradePaper);
+  $('#btnParseGradePaper').onclick=onParseGradePaper;
+}
+
+function setGradeInputMode(mode){
+  $$('#gradeInputMode .seg-btn').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));
+  const isUpload = mode==='upload';
+  $('#gradeUploadPanel').style.display = isUpload ? '' : 'none';
+  $('#gradeManualPanel').style.display = isUpload ? 'none' : '';
+}
+function setExamInputMode(mode){
+  $$('#examInputMode .seg-btn').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));
+  $('#examUploadBox').style.display = mode==='upload' ? '' : 'none';
 }
 
 /* ================= 自动更新 ================= */
@@ -1999,7 +2134,7 @@ function updateStatusText(msg){
 }
 function initUpdater(){
   if(!window.YJAI) return;
-  if(YJAI.getVersion){ YJAI.getVersion().then(v=>{ if(v&&v.version) $('#appVersion').textContent='v'+v.version; }); }
+  if(YJAI.getVersion){ YJAI.getVersion().then(v=>{ if(v&&v.version){ $('#appVersion').textContent='v'+v.version; const fv=$('#footVersion'); if(fv) fv.textContent='v'+v.version; } }); }
   if(YJAI.onUpdateStatus){
     YJAI.onUpdateStatus((p)=>{
       const el=$('#updateStatus'); if(!el) return;
