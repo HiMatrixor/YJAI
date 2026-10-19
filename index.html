@@ -249,7 +249,7 @@
       <div class="card" id="browserLock" style="display:none">
         <div class="empty">
           <div class="big">🔒</div>
-          <div>「浏览器自动化阅卷」为专业版功能，提供 <b>3 天免费试用</b>，试用结束后需买断授权。<br/>请到「设置 → 授权激活」查看状态并输入激活码解锁。</div>
+          <div>「浏览器自动化阅卷」为专业版功能，提供 <b>3 天免费试用</b>，试用结束后需买断授权。<br/>请到「设置 → 授权激活」查看状态并输入解锁串解锁。</div>
           <button class="btn btn-primary" style="margin-top:14px" onclick="switchView('settings')">前往激活</button>
         </div>
       </div>
@@ -542,18 +542,18 @@
       <div class="card">
         <h3>🔑 授权激活 <span class="tag">买断制</span></h3>
         <div id="licenseStatus" style="margin-bottom:12px"></div>
-        <label>本机机器码（发给开发者获取激活码）</label>
+        <label>本机机器码（发给开发者获取解锁串）</label>
         <div class="row">
           <input type="text" id="machineCode" readonly style="flex:1;font-family:'Cascadia Code',Consolas,monospace" />
           <button class="btn btn-ghost" id="btnCopyMachine" style="flex:0 0 auto">复制</button>
         </div>
-        <label>激活码</label>
+        <label>解锁串</label>
         <input type="text" id="licenseKeyInput" placeholder="XXXX-XXXX-XXXX-XXXX" style="font-family:'Cascadia Code',Consolas,monospace;text-transform:uppercase" />
         <div class="row end" style="margin-top:14px">
           <button class="btn btn-primary" id="btnActivate">激活</button>
           <button class="btn btn-ghost" id="btnPay">💳 购买授权</button>
         </div>
-        <div class="hint" style="margin-top:10px">激活码与机器码绑定，一机一码；免费版可使用智能阅卷 / 整卷阅卷 / 学情分析等功能。点击「购买授权」扫码支付后进 QQ 群联系群主获取激活码。</div>
+        <div class="hint" style="margin-top:10px">解锁串与机器码绑定，一机一码；免费版可使用智能阅卷 / 整卷阅卷 / 学情分析等功能。点击「购买授权」扫码支付后进 QQ 群联系群主获取解锁串，输入后自动生成激活码完成激活。</div>
       </div>
       <div class="card">
         <h3>数据管理</h3>
@@ -596,7 +596,7 @@
       <div>① 任选微信 / 支付宝扫码支付</div>
       <div>② 支付完成后，加入 <b>QQ 群：1105769761</b>，联系群主</div>
       <div>③ 将本机「机器码」发给群主</div>
-      <div>④ 群主返回「激活码」，在授权激活中输入即可</div>
+      <div>④ 群主返回「解锁串」，在授权激活中输入即可自动激活</div>
     </div>
     <div class="row end">
       <button class="btn btn-ghost" id="btnPayClose">关闭</button>
@@ -1034,14 +1034,21 @@ async function hmacHex(secret, message){
   const bytes = new Uint8Array(sig);
   return Array.from(bytes).map(b=>b.toString(16).padStart(2,'0')).join('');
 }
-async function genLicenseKey(machineCode){
+// 开发者端：根据机器码生成「解锁串」（种子），用户付款后由开发者发放
+async function genUnlockSeed(machineCode){
   const hex = await hmacHex(getSecret(), machineCode);
   return hex.slice(0,16).toUpperCase().match(/.{4}/g).join('-');
 }
-async function verifyLicense(machineCode, key){
-  const normalized = (key||'').replace(/[^0-9a-fA-F]/g,'').toUpperCase();
-  const hex = await hmacHex(getSecret(), machineCode);
-  return normalized === hex.slice(0,16).toUpperCase();
+// 软件本地：用「解锁串 + 机器码」派生最终激活码（两层 HMAC，绑定机器码）
+async function deriveFinalKey(seed, machineCode){
+  const hex = await hmacHex(seed.replace(/[^0-9a-fA-F]/g,''), machineCode);
+  return hex.slice(0,16).toUpperCase().match(/.{4}/g).join('-');
+}
+// 验证解锁串：本机重算 HMAC(根密钥, 机器码) 得到预期种子，与用户输入比对
+async function verifyUnlockSeed(machineCode, seed){
+  const normalized = (seed||'').replace(/[^0-9a-fA-F]/g,'').toUpperCase();
+  const expected = await hmacHex(getSecret(), machineCode);
+  return normalized === expected.slice(0,16).toUpperCase();
 }
 
 let licenseState = { machineCode:'', licenseKey:'', activated:false };
@@ -1076,7 +1083,7 @@ async function initLicense(){
       const mc = await window.YJAI.getMachineId();
       licenseState.machineCode = mc;
       if(licenseState.licenseKey){
-        licenseState.activated = await verifyLicense(mc, licenseState.licenseKey);
+        licenseState.activated = await verifyUnlockSeed(mc, licenseState.licenseKey);
       } else {
         licenseState.activated = false;
       }
@@ -1088,18 +1095,20 @@ async function initLicense(){
 async function activateLicense(){
   const mc = licenseState.machineCode;
   if(!mc){ toast('无法获取机器码，请重试','err'); return; }
-  const key = $('#licenseKeyInput').value.trim();
-  if(!key){ toast('请输入激活码','err'); return; }
-  const ok = await verifyLicense(mc, key);
+  const seed = $('#licenseKeyInput').value.trim();
+  if(!seed){ toast('请输入解锁串','err'); return; }
+  const ok = await verifyUnlockSeed(mc, seed);
   if(ok){
-    licenseState.licenseKey = key.replace(/[^0-9A-Fa-f]/g,'').toUpperCase().match(/.{4}/g).join('-');
+    // 用解锁串 + 机器码派生最终激活码并保存
+    const finalKey = await deriveFinalKey(seed, mc);
+    licenseState.licenseKey = finalKey;
     licenseState.activated = true;
     saveLicense();
     renderLicenseUI();
     initBrowser();
     toast('激活成功，专业功能已解锁','ok');
   } else {
-    toast('激活码无效，请核对机器码与激活码','err');
+    toast('解锁串无效，请核对机器码与解锁串','err');
   }
 }
 function renderLicenseUI(){
