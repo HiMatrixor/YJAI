@@ -1021,7 +1021,11 @@ function renderResults(){
 }
 
 /* ================= 授权激活（买断制） ================= */
-const LICENSE_SECRET = 'YJAI20261018';
+/* 密钥采用分段混淆存储，运行时拼接，避免明文完整暴露在源码中 */
+function getSecret(){
+  const _p = ['5e076184b7d3ef60','4759883f3d6efb4f','9fe03e48accdb440','aad1ace0cbe0c002'];
+  return _p[0] + _p[1] + _p[2] + _p[3];
+}
 
 async function hmacHex(secret, message){
   const enc = new TextEncoder();
@@ -1031,12 +1035,12 @@ async function hmacHex(secret, message){
   return Array.from(bytes).map(b=>b.toString(16).padStart(2,'0')).join('');
 }
 async function genLicenseKey(machineCode){
-  const hex = await hmacHex(LICENSE_SECRET, machineCode);
+  const hex = await hmacHex(getSecret(), machineCode);
   return hex.slice(0,16).toUpperCase().match(/.{4}/g).join('-');
 }
 async function verifyLicense(machineCode, key){
   const normalized = (key||'').replace(/[^0-9a-fA-F]/g,'').toUpperCase();
-  const hex = await hmacHex(LICENSE_SECRET, machineCode);
+  const hex = await hmacHex(getSecret(), machineCode);
   return normalized === hex.slice(0,16).toUpperCase();
 }
 
