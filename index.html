@@ -1,0 +1,1817 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob: https: http:; connect-src https: http: data: blob:; font-src 'self' data: https://cdn.jsdelivr.net;" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>YJAI · AI 阅卷助手</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
+<script defer src="https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<style>
+  :root{
+    --bg:#0e1116; --bg2:#12161d; --panel:#171c24; --panel2:#1c232e;
+    --border:#262e3a; --border2:#313b4a; --text:#e6edf3; --muted:#8b98a9;
+    --accent:#4f8cff; --accent2:#6aa1ff; --green:#3fb950; --amber:#d29922;
+    --red:#f85149; --purple:#a371f7;
+    --radius:12px; --shadow:0 6px 24px rgba(0,0,0,.35);
+  }
+  body.light{
+    --bg:#f5f7fa; --bg2:#eef1f5; --panel:#ffffff; --panel2:#f2f5f9;
+    --border:#e4e8ee; --border2:#d5dbe4; --text:#1c2430; --muted:#6b7686;
+    --accent:#2f6fed; --accent2:#4f87f2; --green:#1f9d4d; --amber:#b7791f;
+    --red:#d93a32; --purple:#7a3fd6;
+    --shadow:0 6px 24px rgba(30,50,90,.10);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    font-family:"Segoe UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
+    background:var(--bg); color:var(--text); font-size:14px; line-height:1.6;
+    display:flex; overflow:hidden;
+  }
+  /* ---- 侧边栏 ---- */
+  .sidebar{
+    width:210px; min-width:210px; background:var(--bg2); border-right:1px solid var(--border);
+    display:flex; flex-direction:column; padding:16px 12px;
+  }
+  .logo{display:flex;align-items:center;gap:10px;padding:4px 8px 18px;border-bottom:1px solid var(--border);margin-bottom:14px}
+  .logo .mark{width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--purple));
+    display:flex;align-items:center;justify-content:center;font-weight:800;font-size:17px;color:#fff;letter-spacing:.5px}
+  .logo .t{font-size:16px;font-weight:700}
+  .logo .s{font-size:11px;color:var(--muted)}
+  .nav{display:flex;flex-direction:column;gap:4px}
+  .nav button{
+    display:flex;align-items:center;gap:10px;padding:10px 12px;border:none;border-radius:9px;
+    background:transparent;color:var(--muted);font-size:14px;cursor:pointer;text-align:left;
+    transition:.15s;font-family:inherit;
+  }
+  .nav button:hover{background:var(--panel);color:var(--text)}
+  .nav button.active{background:var(--panel2);color:var(--text);font-weight:600}
+  .nav button .ic{width:18px;text-align:center}
+  .sidebar .foot{margin-top:auto;padding:12px 8px 4px;font-size:11px;color:var(--muted);border-top:1px solid var(--border)}
+  .theme-toggle{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:9px 12px;
+    background:var(--panel);border:1px solid var(--border2);border-radius:9px;color:var(--text);
+    font-size:13px;cursor:pointer;font-family:inherit;transition:.15s;margin-bottom:10px}
+  .theme-toggle:hover{border-color:var(--accent)}
+  /* ---- 主区 ---- */
+  .main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+  .topbar{padding:18px 26px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+  .topbar h1{font-size:18px;font-weight:700}
+  .topbar .sub{font-size:12px;color:var(--muted)}
+  .content{flex:1;overflow-y:auto;padding:22px 26px 40px}
+  .view{display:none;max-width:1120px;margin:0 auto}
+  .view.active{display:block}
+  /* ---- 通用组件 ---- */
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;margin-bottom:16px}
+  .card h3{font-size:15px;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+  .card h3 .tag{font-size:11px;font-weight:500;color:var(--accent2);background:rgba(79,140,255,.12);padding:2px 8px;border-radius:20px}
+  label{display:block;font-size:12px;color:var(--muted);margin:12px 0 6px}
+  input[type=text],input[type=password],input[type=number],select,textarea{
+    width:100%;padding:10px 12px;background:var(--bg);border:1px solid var(--border2);border-radius:8px;
+    color:var(--text);font-size:13px;font-family:inherit;outline:none;transition:.15s;
+  }
+  input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(79,140,255,.15)}
+  textarea{resize:vertical;min-height:90px;line-height:1.6}
+  select{cursor:pointer}
+  .btn{
+    display:inline-flex;align-items:center;gap:6px;padding:9px 18px;border:none;border-radius:8px;
+    font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;transition:.15s;color:#fff;
+  }
+  .btn-primary{background:var(--accent)}
+  .btn-primary:hover{background:var(--accent2)}
+  .btn-primary:disabled{opacity:.5;cursor:not-allowed}
+  .btn-ghost{background:var(--panel2);color:var(--text);border:1px solid var(--border2)}
+  .btn-ghost:hover{border-color:var(--accent)}
+  .btn-danger{background:transparent;color:var(--red);border:1px solid rgba(248,81,73,.4)}
+  .btn-danger:hover{background:rgba(248,81,73,.1)}
+  .btn-sm{padding:5px 12px;font-size:12px}
+  .btn.picking{background:var(--accent);color:#fff;border-color:var(--accent);box-shadow:0 0 0 3px rgba(79,140,255,.25);animation:pulse 1s ease-in-out infinite}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 3px rgba(79,140,255,.25)}50%{box-shadow:0 0 0 6px rgba(79,140,255,.12)}}
+  .row{display:flex;gap:12px;flex-wrap:wrap}
+  .row>*{flex:1;min-width:140px}
+  .row.end{justify-content:flex-end}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:860px){.grid2{grid-template-columns:1fr}}
+  .hint{font-size:12px;color:var(--muted)}
+  .empty{text-align:center;color:var(--muted);padding:40px 20px}
+  .empty .big{font-size:40px;margin-bottom:10px}
+  /* ---- 提示 ---- */
+  .toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%);background:var(--panel2);
+    border:1px solid var(--border2);border-radius:10px;padding:11px 20px;font-size:13px;box-shadow:var(--shadow);
+    opacity:0;pointer-events:none;transition:.25s;z-index:99;max-width:80vw}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(-4px)}
+  .toast.ok{border-color:rgba(63,185,80,.5)}
+  .toast.err{border-color:rgba(248,81,73,.5)}
+  /* ---- token 徽章 ---- */
+  .token-badge{position:fixed;right:16px;bottom:16px;background:var(--panel2);border:1px solid var(--border2);
+    border-radius:20px;padding:6px 14px;font-size:12px;color:var(--muted);box-shadow:var(--shadow);
+    z-index:98;cursor:default;transition:.2s;user-select:none}
+  .token-badge:hover{color:var(--text);border-color:var(--accent)}
+  /* ---- markdown 预览 ---- */
+  .md-preview{background:var(--bg);border:1px solid var(--border2);border-radius:8px;padding:14px 16px;margin-top:10px;font-size:14px;line-height:1.8;overflow-x:auto;word-break:break-word}
+  .md-preview h1,.md-preview h2,.md-preview h3,.md-preview h4{margin:14px 0 6px;color:var(--text);line-height:1.4}
+  .md-preview h1{font-size:18px}.md-preview h2{font-size:16px}.md-preview h3{font-size:15px}
+  .md-preview p{margin:6px 0}
+  .md-preview ul,.md-preview ol{margin:6px 0 6px 20px}
+  .md-preview li{margin:3px 0}
+  .md-preview code{background:var(--panel2);padding:1px 6px;border-radius:4px;font-family:Consolas,monospace;font-size:13px}
+  .md-preview pre{background:var(--bg2);padding:10px 12px;border-radius:6px;overflow-x:auto;margin:8px 0}
+  .md-preview pre code{background:transparent;padding:0}
+  .md-preview strong{font-weight:700}
+  .md-preview blockquote{border-left:3px solid var(--accent);padding-left:10px;color:var(--muted);margin:8px 0}
+  .md-preview table{border-collapse:collapse;margin:8px 0}
+  .md-preview th,.md-preview td{border:1px solid var(--border2);padding:6px 10px}
+  .md-preview .katex{font-size:1.1em}
+  .md-preview .katex-display{margin:10px 0}
+  /* ---- 表格 ---- */
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--border)}
+  th{color:var(--muted);font-weight:600;font-size:12px}
+  tr:hover td{background:rgba(255,255,255,.02)}
+  .score-badge{display:inline-flex;align-items:center;justify-content:center;min-width:52px;padding:3px 10px;border-radius:20px;font-weight:700}
+  .score-high{background:rgba(63,185,80,.15);color:var(--green)}
+  .score-mid{background:rgba(210,153,34,.15);color:var(--amber)}
+  .score-low{background:rgba(248,81,73,.15);color:var(--red)}
+  /* ---- 学生答案列表 ---- */
+  .stu-item{border:1px solid var(--border2);border-radius:10px;margin-bottom:10px;overflow:hidden;background:var(--bg)}
+  .stu-head{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--panel2)}
+  .stu-head input[type=text]{flex:1;padding:6px 10px;background:var(--bg);border:1px solid var(--border2);border-radius:6px;font-size:12px}
+  .stu-body{padding:10px 12px}
+  .stu-body textarea{min-height:70px;background:var(--panel)}
+  .img-preview{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .img-preview .thumb{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid var(--border2)}
+  /* ---- 结果详情 ---- */
+  .detail-point{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px dashed var(--border);font-size:13px}
+  .detail-point:last-child{border-bottom:none}
+  .pt{color:var(--text)}
+  .pt-score{color:var(--accent2);font-weight:600;white-space:nowrap}
+  .mono{font-family:"Cascadia Code",Consolas,monospace}
+  /* ---- 统计卡片 ---- */
+  .stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
+  .stat{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px;text-align:center}
+  .stat .v{font-size:26px;font-weight:800;line-height:1.2}
+  .stat .k{font-size:12px;color:var(--muted);margin-top:4px}
+  /* ---- 分布图 ---- */
+  .dist{display:flex;align-items:flex-end;gap:10px;height:160px;padding:10px 6px}
+  .dist .bar-wrap{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;height:100%;justify-content:flex-end}
+  .dist .bar{width:100%;max-width:52px;background:linear-gradient(180deg,var(--accent),var(--accent2));border-radius:6px 6px 0 0;min-height:2px;transition:.3s}
+  .dist .bl{font-size:11px;color:var(--muted)}
+  .dist .bc{font-size:11px;color:var(--text);font-weight:600}
+  /* ---- 模板卡片 ---- */
+  .tpl-item{display:flex;align-items:center;gap:10px;padding:11px 14px;border:1px solid var(--border2);border-radius:10px;margin-bottom:8px;background:var(--bg)}
+  .tpl-item .name{font-weight:600}
+  .tpl-item .meta{font-size:12px;color:var(--muted)}
+  .tpl-item .grow{flex:1}
+  /* ---- 设置快捷 ---- */
+  .preset{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .preset button{padding:6px 12px;font-size:12px;border:1px solid var(--border2);border-radius:7px;background:var(--bg);color:var(--text);cursor:pointer}
+  .preset button:hover{border-color:var(--accent)}
+  .switch{display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13px}
+  .switch input{width:auto}
+  .modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:50}
+  .modal-mask.show{display:flex}
+  .modal{background:var(--panel);border:1px solid var(--border2);border-radius:14px;padding:22px;width:90%;max-width:560px;max-height:84vh;overflow-y:auto}
+  /* ---- 支付弹窗 ---- */
+  .pay-qr-row{display:flex;gap:16px;justify-content:center;margin:16px 0}
+  .pay-qr{flex:1;max-width:220px;text-align:center}
+  .pay-qr img{width:100%;max-width:200px;border:1px solid var(--border2);border-radius:12px;background:#fff;padding:8px}
+  .pay-qr .name{margin-top:8px;font-size:13px;font-weight:600}
+  .pay-qr .name.wx{color:#07c160}.pay-qr .name.ali{color:#1677ff}
+  .pay-steps{background:var(--bg);border:1px solid var(--border2);border-radius:10px;padding:12px 16px;font-size:13px;line-height:1.9;margin-bottom:14px}
+  .pay-steps b{color:var(--accent2)}
+  .modal h3{margin-bottom:14px}
+  .spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;display:inline-block}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:6px}
+  ::-webkit-scrollbar-track{background:transparent}
+  /* ---- 浏览器阅卷 ---- */
+  .browser-status{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:8px}
+  .br-shot{max-width:100%;border:1px solid var(--border2);border-radius:8px;margin-top:10px;display:none}
+  .br-tag{font-size:11px;padding:2px 8px;border-radius:12px;background:var(--panel2);color:var(--muted)}
+  .br-tag.ok{background:rgba(63,185,80,.15);color:var(--green)}
+  .br-monitor{background:var(--bg);border:1px solid var(--border2);border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:12px;line-height:1.7}
+  .br-monitor .line{display:flex;justify-content:space-between}
+  .br-log{max-height:140px;overflow-y:auto;font-size:11px;color:var(--muted);line-height:1.6}
+  .br-log .i{color:var(--accent2)}
+  .br-log .w{color:var(--amber)}
+  .br-log .e{color:var(--red)}
+</style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="logo">
+    <div class="mark">阅</div>
+    <div>
+      <div class="t">YJAI</div>
+      <div class="s">AI 阅卷助手</div>
+    </div>
+  </div>
+  <nav class="nav">
+    <button data-view="browser" class="active"><span class="ic">🌐</span>浏览器阅卷</button>
+    <button data-view="grade"><span class="ic">✏️</span>智能阅卷</button>
+    <button data-view="exam"><span class="ic">📝</span>整卷阅卷</button>
+    <button data-view="analysis"><span class="ic">📊</span>学情分析</button>
+    <button data-view="criteria"><span class="ic">📋</span>评分标准</button>
+    <button data-view="settings"><span class="ic">⚙️</span>设置</button>
+  </nav>
+  <div class="foot">
+    <button class="theme-toggle" id="themeToggle"><span class="ic">🌙</span><span id="themeToggleText">深色模式</span></button>
+    <div>YJAI v1.0 · 本地运行<br/>数据仅保存在本机</div>
+  </div>
+</aside>
+
+<div class="main">
+  <div class="topbar">
+    <div>
+      <h1 id="pageTitle">智能阅卷</h1>
+      <div class="sub" id="pageSub">AI 按评分标准自动批改学生答案</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span class="hint" id="apiStatus">未配置 API</span>
+      <button class="btn btn-primary" id="btnGoSettings" style="display:none">去配置 API</button>
+    </div>
+  </div>
+
+  <div class="content">
+
+    <!-- ============ 浏览器阅卷 ============ -->
+    <div class="view active" id="view-browser">
+      <div class="card" id="browserNeedDesktop" style="display:none">
+        <div class="empty">
+          <div class="big">🖥️</div>
+          <div>「浏览器阅卷」需要桌面版 YJAI 才能内嵌浏览器并模拟操作。<br/>请下载并运行 <b>YJAI.exe</b> 桌面版体验此功能。</div>
+        </div>
+      </div>
+
+      <div class="card" id="browserLock" style="display:none">
+        <div class="empty">
+          <div class="big">🔒</div>
+          <div>「浏览器自动化阅卷」为专业版功能，提供 <b>3 天免费试用</b>，试用结束后需买断授权。<br/>请到「设置 → 授权激活」查看状态并输入激活码解锁。</div>
+          <button class="btn btn-primary" style="margin-top:14px" onclick="switchView('settings')">前往激活</button>
+        </div>
+      </div>
+
+      <div id="browserMain" style="display:none">
+        <!-- 1 浏览器 -->
+        <div class="card">
+          <h3>🌐 浏览器</h3>
+          <div class="row">
+            <div style="flex:0 0 120px">
+              <label>内核</label>
+              <select id="brEngine">
+                <option value="edge">Edge 内核</option>
+                <option value="chrome">Chrome 内核</option>
+              </select>
+            </div>
+            <div>
+              <label>阅卷平台网址</label>
+              <input type="text" id="brUrl" placeholder="输入阅卷平台网址，如 dongni100.com" />
+            </div>
+            <div style="flex:0 0 auto;display:flex;gap:8px;align-items:flex-end;padding-bottom:1px">
+              <button class="btn btn-primary" id="brOpenWin">🌐 打开浏览器</button>
+              <button class="btn btn-ghost" id="brFocusWin">聚焦</button>
+              <button class="btn btn-ghost" id="brCloseWin">关闭</button>
+            </div>
+          </div>
+          <div class="browser-status" id="brStatus" style="margin-top:10px"><span>💡 浏览器在独立窗口打开；支持缩放（缩放后请重新框选）；阅卷中勿刷新/关闭页面</span></div>
+        </div>
+
+        <!-- 2 评分标准 -->
+        <div class="card">
+          <h3>📋 评分标准</h3>
+          <div class="row" style="margin-bottom:4px">
+            <div><label>科目</label><select id="brSubject"></select></div>
+            <div><label>阅卷模式</label><select id="brMode"><option>稳健模式</option><option>顶尖模式</option><option>标准模式</option></select></div>
+            <div><label>本题满分</label><input type="number" id="brFullScore" value="6" min="0.5" step="0.5" /></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+            <label style="margin:0">AI 评分标准（题目 · 满分 · 参考答案 · 得分点）</label>
+            <button class="btn btn-ghost btn-sm" id="brPreviewBtn">👁 预览</button>
+          </div>
+          <textarea id="brCriteria" style="min-height:200px" placeholder="题目：&#10;满分：6分&#10;参考答案：&#10;得分点："></textarea>
+          <div class="md-preview" id="brCriteriaPreview" style="display:none"></div>
+          <div class="hint" style="margin-top:6px">支持 Markdown 与数学公式：行内 <code>$公式$</code>、独立 <code>$$公式$$</code>，如 <code>$x^2+y^2=z^2$</code></div>
+        </div>
+
+        <!-- 3 答题区域设置 -->
+        <div class="card">
+          <h3>🎯 答题区域设置 <span class="tag">每次换题需重新框选</span></h3>
+          <div class="row">
+            <button class="btn btn-primary" id="brSelectArea">选择区域</button>
+            <button class="btn btn-ghost" id="brTestShot">测试截图</button>
+            <span class="hint" id="brAreaInfo" style="align-self:center;font-family:'Cascadia Code',Consolas,monospace">X:0  Y:0  W:0  H:0</span>
+          </div>
+          <img class="br-shot" id="brShotPreview" alt="截图预览" />
+        </div>
+
+        <!-- 4 分数提交配置 -->
+        <div class="card">
+          <h3>⌨️ 分数提交配置 <span class="tag">平台不变可复用</span></h3>
+          <div class="hint" style="margin-bottom:8px">请先关闭阅卷平台自带的「自动提交」；点击按钮后自动跳转浏览器窗口，在页面中单击对应元素即可拾取。</div>
+          <div class="row">
+            <button class="btn btn-ghost" id="brPickInput">分数输入框 <span class="br-tag" id="brTagInput">未拾取</span></button>
+            <button class="btn btn-ghost" id="brPickSubmit">提交按钮 <span class="br-tag" id="brTagSubmit">未拾取</span></button>
+            <button class="btn btn-ghost" id="brPickMeta">元数据(可选) <span class="br-tag" id="brTagMeta">未拾取</span></button>
+            <button class="btn btn-ghost" id="brTestSubmit">🧪 测试提交</button>
+          </div>
+          <div class="hint" id="brSelectorInfo" style="margin-top:10px;font-family:'Cascadia Code',Consolas,monospace">分数输入框：未配置　提交按钮：未配置</div>
+        </div>
+
+        <!-- 5 自动化设置 -->
+        <div class="card">
+          <h3>⚙️ 自动化设置</h3>
+          <div class="row" style="align-items:flex-end">
+            <div><label>阅卷数量</label><input type="number" id="brCount" value="10" min="1" /></div>
+            <div><label>间隔（秒）</label><input type="number" id="brInterval" value="3" min="1" step="0.5" /></div>
+            <button class="btn btn-primary" id="brStart" style="flex:1">▶ 开始阅卷</button>
+            <button class="btn btn-danger" id="brStop" style="flex:0 0 auto">停止</button>
+          </div>
+          <div class="hint" style="margin-top:8px">建议先小批量测试，确认正常后再批量阅卷。</div>
+        </div>
+
+        <!-- 6 实时阅卷记录 -->
+        <div class="card">
+          <h3>📊 实时阅卷记录</h3>
+          <div class="br-monitor" id="brMonitor">
+            <div class="line"><span>已阅数量</span><b id="brMCount">0</b></div>
+            <div class="line"><span>平均分</span><b id="brMAvg">—</b></div>
+            <div class="line"><span>最新结果</span><b id="brMLast">—</b></div>
+          </div>
+          <div class="br-log" id="brLog"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 智能阅卷 ============ -->
+    <div class="view" id="view-grade">
+      <div class="card">
+        <h3>1 · 选择科目与评分标准 <span class="tag">阅卷依据</span></h3>
+        <div class="row">
+          <div>
+            <label>科目</label>
+            <select id="gradeSubject"></select>
+          </div>
+          <div>
+            <label>加载评分标准模板</label>
+            <select id="gradeTemplate"><option value="">— 手动填写 —</option></select>
+          </div>
+          <div>
+            <label>本题满分</label>
+            <input type="number" id="gradeFullScore" value="6" min="0.5" step="0.5" />
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>2 · 填写题目与评分标准</h3>
+        <label>题目内容</label>
+        <textarea id="gradeQuestion" placeholder="在此输入题目内容，例如：请简述光合作用的过程及其意义。"></textarea>
+        <div class="grid2" style="margin-top:12px">
+          <div>
+            <label>参考答案</label>
+            <textarea id="gradeReference" placeholder="输入参考答案 / 标准答案"></textarea>
+          </div>
+          <div>
+            <label>得分点（分点列出，可标注分值）</label>
+            <textarea id="gradePoints" placeholder="1. 答出光反应与暗反应（2分）&#10;2. 答出场所与产物（2分）&#10;3. 答出意义（2分）"></textarea>
+          </div>
+        </div>
+        <div class="grid2" style="margin-top:12px">
+          <div>
+            <label>不得分答案（错误典型）</label>
+            <textarea id="gradeWrong" placeholder="分点列出不应得分的典型错误答案"></textarea>
+          </div>
+          <div>
+            <label>评卷备注（注意事项）</label>
+            <textarea id="gradeNote" placeholder="例如：关键术语写错不得分；意思对即可给分等"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>3 · 输入学生答案 <span class="tag">可批量</span></h3>
+        <div class="hint" style="margin-bottom:10px">每位学生一份答案。支持文本输入，或上传学生手写答案的图片（AI 视觉识别）。</div>
+        <div id="stuList"></div>
+        <div class="row end" style="margin-top:12px">
+          <button class="btn btn-ghost" id="btnAddStudent">＋ 添加学生</button>
+          <button class="btn btn-ghost" id="btnPasteBatch">从剪贴板批量粘贴</button>
+        </div>
+      </div>
+
+      <div class="card" style="text-align:center">
+        <button class="btn btn-primary" id="btnStartGrade" style="font-size:15px;padding:12px 34px">🚀 开始 AI 阅卷</button>
+        <div class="hint" style="margin-top:8px" id="gradeProgress"></div>
+      </div>
+
+      <div class="card" id="resultCard" style="display:none">
+        <h3>4 · 阅卷结果</h3>
+        <div class="row end" style="margin-bottom:10px">
+          <button class="btn btn-ghost btn-sm" id="btnExportCsv">导出 CSV (Excel)</button>
+          <button class="btn btn-ghost btn-sm" id="btnExportMd">导出 Markdown</button>
+        </div>
+        <div id="resultList"></div>
+      </div>
+    </div>
+
+    <!-- ============ 整卷阅卷 ============ -->
+    <div class="view" id="view-exam">
+      <div class="card">
+        <h3>1 · 试卷信息</h3>
+        <div class="row">
+          <div>
+            <label>试卷名称</label>
+            <input type="text" id="examTitle" placeholder="例如：2024 级期中考试 · 数学" />
+          </div>
+          <div>
+            <label>科目</label>
+            <select id="examSubject"></select>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>2 · 试卷题目 <span class="tag">逐题定义</span></h3>
+        <div class="hint" style="margin-bottom:10px">逐题填写题目、满分与评分标准（参考答案 / 得分点）。</div>
+        <div id="examQuestions"></div>
+        <div class="row end" style="margin-top:10px">
+          <button class="btn btn-ghost" id="btnAddQuestion">＋ 添加题目</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>3 · 学生答卷 <span class="tag">批量</span></h3>
+        <div class="hint" style="margin-bottom:10px">每位学生一份答卷，逐题填写答案。支持「从剪贴板批量导入」。</div>
+        <div id="examStudents"></div>
+        <div class="row end" style="margin-top:10px">
+          <button class="btn btn-ghost" id="btnAddExamStudent">＋ 添加学生</button>
+          <button class="btn btn-ghost" id="btnPasteExam">从剪贴板批量导入</button>
+        </div>
+      </div>
+
+      <div class="card" style="text-align:center">
+        <button class="btn btn-primary" id="btnStartExam" style="font-size:15px;padding:12px 34px">🚀 开始整卷阅卷</button>
+        <div class="hint" id="examProgress" style="margin-top:8px"></div>
+      </div>
+
+      <div class="card" id="examResultCard" style="display:none">
+        <h3>4 · 成绩单</h3>
+        <div class="row end" style="margin-bottom:10px">
+          <button class="btn btn-ghost btn-sm" id="btnExamCsv">导出 CSV (Excel)</button>
+          <button class="btn btn-ghost btn-sm" id="btnExamMd">导出 Markdown</button>
+        </div>
+        <div class="stat-row" id="examStatRow" style="margin-top:6px"></div>
+        <div id="examResultTable"></div>
+      </div>
+    </div>
+
+    <!-- ============ 学情分析 ============ -->
+    <div class="view" id="view-analysis">
+      <div id="analysisEmpty" class="card empty">
+        <div class="big">📊</div>
+        <div>暂无阅卷记录，完成阅卷后将在此生成学情分析。</div>
+      </div>
+      <div id="analysisBody" style="display:none">
+        <div class="stat-row" id="statRow"></div>
+        <div class="card">
+          <h3>成绩分布</h3>
+          <div class="dist" id="distChart"></div>
+        </div>
+        <div class="card">
+          <h3>学生成绩明细</h3>
+          <table>
+            <thead><tr><th>学生</th><th>科目</th><th>题目</th><th>得分</th><th>得分率</th><th>阅卷时间</th></tr></thead>
+            <tbody id="analysisTable"></tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h3>失分点与改进建议汇总</h3>
+          <div id="analysisInsights"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 评分标准 ============ -->
+    <div class="view" id="view-criteria">
+      <div class="card">
+        <h3>评分标准模板库 <span class="tag">四要素</span></h3>
+        <div class="hint" style="margin-bottom:12px">评分标准由 <b>题目要求、参考答案、评分细则（得分点）、不得分标准</b> 四个核心部分组成。</div>
+        <div id="tplList"></div>
+        <div class="row end" style="margin-top:8px">
+          <button class="btn btn-primary" id="btnNewTpl">＋ 新建模板</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>AI 优化评分标准</h3>
+        <div class="hint" style="margin-bottom:8px">粘贴一份粗糙的评分标准，让 AI 帮你重写为规范的四要素格式。</div>
+        <textarea id="optimizeInput" placeholder="粘贴原始题目与评分要求…"></textarea>
+        <div class="row end" style="margin-top:10px">
+          <button class="btn btn-ghost" id="btnOptimize">✨ AI 优化</button>
+        </div>
+        <div id="optimizeOutput" style="margin-top:12px"></div>
+      </div>
+    </div>
+
+    <!-- ============ 设置 ============ -->
+    <div class="view" id="view-settings">
+      <div class="card">
+        <h3>AI 服务配置 <span class="tag">必需</span></h3>
+        <div class="hint" style="margin-bottom:12px">YJAI 通过 OpenAI 兼容接口调用大模型完成阅卷。API Key 仅保存在本机浏览器 localStorage 中。</div>
+        <div class="preset">
+          <span class="hint" style="margin:0;align-self:center">快捷填入：</span>
+          <button data-preset="openai">OpenAI</button>
+          <button data-preset="deepseek">DeepSeek</button>
+          <button data-preset="qwen">通义千问</button>
+          <button data-preset="glm">智谱 GLM</button>
+          <button data-preset="moonshot">Kimi</button>
+        </div>
+        <label>API Base URL</label>
+        <input type="text" id="setBaseUrl" placeholder="https://api.openai.com/v1" />
+        <label>API Key</label>
+        <input type="password" id="setApiKey" placeholder="sk-..." autocomplete="off" />
+        <label>模型名称</label>
+        <input type="text" id="setModel" placeholder="gpt-4o-mini" />
+        <div class="row end" style="margin-top:16px">
+          <button class="btn btn-ghost" id="btnTestApi">测试连接</button>
+          <button class="btn btn-primary" id="btnSaveSettings">保存配置</button>
+        </div>
+        <div class="hint" id="testResult" style="margin-top:10px"></div>
+      </div>
+      <div class="card">
+        <h3>🔑 授权激活 <span class="tag">买断制</span></h3>
+        <div id="licenseStatus" style="margin-bottom:12px"></div>
+        <label>本机机器码（发给开发者获取激活码）</label>
+        <div class="row">
+          <input type="text" id="machineCode" readonly style="flex:1;font-family:'Cascadia Code',Consolas,monospace" />
+          <button class="btn btn-ghost" id="btnCopyMachine" style="flex:0 0 auto">复制</button>
+        </div>
+        <label>激活码</label>
+        <input type="text" id="licenseKeyInput" placeholder="XXXX-XXXX-XXXX-XXXX" style="font-family:'Cascadia Code',Consolas,monospace;text-transform:uppercase" />
+        <div class="row end" style="margin-top:14px">
+          <button class="btn btn-primary" id="btnActivate">激活</button>
+          <button class="btn btn-ghost" id="btnPay">💳 购买授权</button>
+        </div>
+        <div class="hint" style="margin-top:10px">激活码与机器码绑定，一机一码；免费版可使用智能阅卷 / 整卷阅卷 / 学情分析等功能。点击「购买授权」扫码支付后进 QQ 群联系群主获取激活码。</div>
+      </div>
+      <div class="card">
+        <h3>数据管理</h3>
+        <div class="hint" style="margin-bottom:12px">所有阅卷记录与模板均保存在本机浏览器中。</div>
+        <div class="row end">
+          <button class="btn btn-danger" id="btnClearRecords">清空阅卷记录</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>🔄 关于与更新</h3>
+        <div class="hint" style="margin-bottom:12px">当前版本：<b id="appVersion">-</b>　·　买断制，永久免费更新</div>
+        <div class="row">
+          <button class="btn btn-ghost" id="btnCheckUpdate">检查更新</button>
+          <button class="btn btn-primary" id="btnDownloadUpdate" style="display:none">下载更新</button>
+          <button class="btn btn-primary" id="btnInstallUpdate" style="display:none">立即重启安装</button>
+        </div>
+        <div class="hint" id="updateStatus" style="margin-top:10px"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- 购买/支付弹窗 -->
+<div class="modal-mask" id="payModal">
+  <div class="modal">
+    <h3>💳 购买专业版授权</h3>
+    <div class="hint" style="margin:8px 0">买断制 · 原价 <b>29.9 元</b> · 早鸟价 <b style="color:var(--amber)">9.9 元</b>（2026 年 11 月 20 日前）</div>
+    <div class="pay-qr-row">
+      <div class="pay-qr">
+        <img src="pay-wechat.png" alt="微信支付收款码" />
+        <div class="name wx">微信支付</div>
+      </div>
+      <div class="pay-qr">
+        <img src="pay-alipay.jpg" alt="支付宝收款码" />
+        <div class="name ali">支付宝</div>
+      </div>
+    </div>
+    <div class="pay-steps">
+      <div>① 任选微信 / 支付宝扫码支付</div>
+      <div>② 支付完成后，加入 <b>QQ 群：1105769761</b>，联系群主</div>
+      <div>③ 将本机「机器码」发给群主</div>
+      <div>④ 群主返回「激活码」，在授权激活中输入即可</div>
+    </div>
+    <div class="row end">
+      <button class="btn btn-ghost" id="btnPayClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 新建/编辑模板弹窗 -->
+<div class="modal-mask" id="tplModal">
+  <div class="modal">
+    <h3 id="tplModalTitle">新建评分标准模板</h3>
+    <label>模板名称</label>
+    <input type="text" id="tplName" placeholder="例如：初中物理简答题通用标准" />
+    <label>适用科目</label>
+    <select id="tplSubject"></select>
+    <label>题目（可留占位符）</label>
+    <textarea id="tplQuestion" placeholder="题目内容"></textarea>
+    <label>参考答案</label>
+    <textarea id="tplReference"></textarea>
+    <label>得分点</label>
+    <textarea id="tplPoints"></textarea>
+    <label>不得分答案</label>
+    <textarea id="tplWrong"></textarea>
+    <label>备注</label>
+    <textarea id="tplNote"></textarea>
+    <div class="row end" style="margin-top:16px">
+      <button class="btn btn-ghost" id="btnTplCancel">取消</button>
+      <button class="btn btn-primary" id="btnTplSave">保存模板</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="token-badge" id="tokenBadge" title="累计 Token 消耗统计">⚡ 输入 <b id="tkIn">0</b> · 输出 <b id="tkOut">0</b></div>
+
+<script>
+/* ================= 常量与状态 ================= */
+const SUBJECTS = ['语文','数学','英语','物理','化学','生物','历史','地理','政治','信息','其他'];
+const PRESETS = {
+  openai:  { base:'https://api.openai.com/v1', model:'gpt-4o-mini' },
+  deepseek:{ base:'https://api.deepseek.com/v1', model:'deepseek-chat' },
+  qwen:    { base:'https://dashscope.aliyuncs.com/compatible-mode/v1', model:'qwen-plus' },
+  glm:     { base:'https://open.bigmodel.cn/api/paas/v4', model:'glm-4-flash' },
+  moonshot:{ base:'https://api.moonshot.cn/v1', model:'moonshot-v1-8k' },
+};
+const DEFAULT_TPL = {
+  name:'通用简答题评分标准',
+  subject:'其他',
+  question:'题目：<!-- 请在此处替换为具体的题目内容 -->',
+  reference:'参考答案：<!-- 请在此处替换为具体的参考答案内容 -->',
+  points:'得分点：\n1. <!-- 分点列出，标注分值 -->\n2. ',
+  wrong:'不得分答案：\n1. <!-- 分点列出典型错误 -->',
+  note:'备注：<!-- 评卷注意事项 -->'
+};
+
+let state = {
+  settings:{ baseUrl:'', apiKey:'', model:'' },
+  subjects:[...SUBJECTS],
+  templates:[],
+  records:[],       // {id,student,subject,question,score,fullScore,rate,detail,comment,time}
+  students:[],      // 当前阅卷批次 {id,name,text,images:[base64]}
+  gradeResults:[],  // 当前批次结果
+  usage:{ prompt:0, completion:0 },  // token 消耗累计
+};
+
+// 整卷阅卷状态
+let examState = {
+  title:'', subject:'语文',
+  questions:[],     // {id,num,text,fullScore,reference,points,wrong,note}
+  students:[],      // {id,name,answers:{qid:text}}
+  results:[],       // {student,scores:{qid:{score,comment}},total,fullTotal,rate,rank}
+};
+
+/* ================= 工具函数 ================= */
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+function esc(s){return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function toast(msg,type=''){const t=$('#toast');t.textContent=msg;t.className='toast show '+type;clearTimeout(t._t);t._t=setTimeout(()=>t.className='toast',2600);}
+function save(k,v){try{localStorage.setItem('yjai_'+k,JSON.stringify(v));}catch(e){toast('存储失败：'+e.message,'err');}}
+function load(k,d){try{const v=localStorage.getItem('yjai_'+k);return v?JSON.parse(v):d;}catch(e){return d;}}
+function loadTheme(){ try{return localStorage.getItem('yjai_theme')||'dark';}catch(e){return 'dark';} }
+function applyTheme(theme){
+  document.body.classList.toggle('light', theme==='light');
+  const ic = $('#themeToggle .ic'), tx = $('#themeToggleText');
+  if(ic) ic.textContent = theme==='light' ? '☀️' : '🌙';
+  if(tx) tx.textContent = theme==='light' ? '浅色模式' : '深色模式';
+}
+function toggleTheme(){
+  const cur = document.body.classList.contains('light') ? 'light' : 'dark';
+  const next = cur==='light' ? 'dark' : 'light';
+  applyTheme(next);
+  try{ localStorage.setItem('yjai_theme', next); }catch(e){}
+}
+
+/* ================= 初始化加载 ================= */
+function loadState(){
+  state.settings = load('settings',{baseUrl:'',apiKey:'',model:''});
+  state.templates = load('templates',[defaultTplObject()]);
+  state.records = load('records',[]);
+  state.usage = load('usage',{prompt:0,completion:0});
+}
+function defaultTplObject(){return {...DEFAULT_TPL,id:uid()};}
+
+/* ================= 视图切换 ================= */
+const VIEW_META = {
+  browser:  ['浏览器阅卷','内嵌浏览器 · 区域框选 · 自动截图给分'],
+  grade:    ['智能阅卷','AI 按评分标准自动批改学生答案'],
+  exam:     ['整卷阅卷','整卷试卷 · 多题多学生 · 批量评分'],
+  analysis: ['学情分析','成绩统计 · 失分点聚合 · 报告导出'],
+  criteria: ['评分标准','评分标准模板库与 AI 优化'],
+  settings: ['设置','配置 AI 服务与数据管理'],
+};
+function switchView(name){
+  $$('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.view===name));
+  $$('.view').forEach(v=>v.classList.remove('active'));
+  $('#view-'+name).classList.add('active');
+  $('#pageTitle').textContent = VIEW_META[name][0];
+  $('#pageSub').textContent = VIEW_META[name][1];
+  if(name==='analysis') renderAnalysis();
+  if(name==='criteria') renderTemplates();
+}
+
+/* ================= 设置 ================= */
+function refreshApiStatus(){
+  const cfg = state.settings;
+  const ok = cfg.apiKey && cfg.baseUrl && cfg.model;
+  $('#apiStatus').textContent = ok ? '✅ API 已配置' : '⚠️ 未配置 API';
+  $('#apiStatus').style.color = ok ? 'var(--green)' : 'var(--amber)';
+  $('#btnGoSettings').style.display = ok ? 'none' : '';
+}
+function loadSettingsUI(){
+  $('#setBaseUrl').value = state.settings.baseUrl||'';
+  $('#setApiKey').value = state.settings.apiKey||'';
+  $('#setModel').value = state.settings.model||'';
+  refreshApiStatus();
+}
+async function callAI(messages,{json=false}={}){
+  const cfg = state.settings;
+  if(!cfg.apiKey || !cfg.baseUrl || !cfg.model) throw new Error('请先在「设置」中配置 API Key');
+  const url = cfg.baseUrl.replace(/\/+$/,'')+'/chat/completions';
+  const headers = {'Content-Type':'application/json','Authorization':'Bearer '+cfg.apiKey};
+  const baseBody = { model:cfg.model, messages, temperature:0.2, max_tokens:4000 };
+  let body = Object.assign({}, baseBody);
+  if(json) body.response_format = {type:'json_object'};
+  let res = await fetch(url,{method:'POST',headers:headers,body:JSON.stringify(body)});
+  // 部分服务商不支持 response_format，自动降级重试
+  if(!res.ok && json && body.response_format){
+    delete body.response_format;
+    res = await fetch(url,{method:'POST',headers:headers,body:JSON.stringify(body)});
+  }
+  if(!res.ok){const t=await res.text();throw new Error('API 请求失败 ('+res.status+'): '+t.slice(0,300));}
+  const data = await res.json();
+  if(data.usage){
+    state.usage.prompt += data.usage.prompt_tokens||0;
+    state.usage.completion += data.usage.completion_tokens||0;
+    save('usage', state.usage);
+    updateTokenDisplay();
+  }
+  return data.choices[0].message.content;
+}
+/* 健壮的 JSON 解析：兼容 markdown 代码块、前后多余文本 */
+function parseAIJson(text){
+  if(!text) throw new Error('AI 返回为空');
+  try{ return JSON.parse(text); }catch(e){}
+  const codeBlock = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if(codeBlock){ try{ return JSON.parse(codeBlock[1]); }catch(e){} }
+  const start = text.search(/[\{\[]/);
+  if(start >= 0){
+    const stack = [];
+    for(let i=start;i<text.length;i++){
+      const c = text[i];
+      if(c==='{'||c==='[') stack.push(c);
+      else if(c==='}'||c===']'){
+        stack.pop();
+        if(stack.length===0){
+          try{ return JSON.parse(text.slice(start, i+1)); }catch(e){ break; }
+        }
+      }
+    }
+  }
+  throw new Error('无法解析 AI 返回的 JSON');
+}
+/* Markdown + 数学公式渲染（marked + KaTeX） */
+function renderMarkdownWithMath(text){
+  if(!text) return '';
+  const mathBlocks = [];
+  let t = text.replace(/\$\$([\s\S]+?)\$\$/g, (m, latex) => {
+    mathBlocks.push({latex:latex, display:true});
+    return '\u0000M'+(mathBlocks.length-1)+'\u0000';
+  });
+  t = t.replace(/\$([^\$\n]+?)\$/g, (m, latex) => {
+    mathBlocks.push({latex:latex, display:false});
+    return '\u0000M'+(mathBlocks.length-1)+'\u0000';
+  });
+  let html;
+  try{
+    html = window.marked ? window.marked.parse(t, {breaks:true}) : esc(t).replace(/\n/g,'<br/>');
+  }catch(e){ html = esc(t).replace(/\n/g,'<br/>'); }
+  mathBlocks.forEach((mb, i) => {
+    const ph = '\u0000M'+i+'\u0000';
+    let rendered;
+    try{
+      rendered = window.katex ? window.katex.renderToString(mb.latex, {displayMode: mb.display, throwOnError:false}) : esc(mb.latex);
+    }catch(e){ rendered = esc(mb.latex); }
+    html = html.split(ph).join(rendered);
+  });
+  return html;
+}
+function updateTokenDisplay(){
+  const elIn = $('#tkIn'), elOut = $('#tkOut');
+  if(!elIn || !elOut) return;
+  elIn.textContent = formatTokens(state.usage.prompt);
+  elOut.textContent = formatTokens(state.usage.completion);
+  const total = state.usage.prompt + state.usage.completion;
+  const badge = $('#tokenBadge');
+  if(badge) badge.title = '累计 Token：输入 '+state.usage.prompt+' / 输出 '+state.usage.completion+' / 共 '+total;
+}
+function formatTokens(n){
+  if(n>=1000000) return (n/1000000).toFixed(1)+'M';
+  if(n>=1000) return (n/1000).toFixed(1)+'k';
+  return String(n);
+}
+
+/* ================= 学生答案管理 ================= */
+function addStudent(seed){
+  const s = {id:uid(),name:seed?.name||'',text:seed?.text||'',images:seed?.images||[]};
+  state.students.push(s);
+  renderStudents();
+  return s;
+}
+function renderStudents(){
+  const box = $('#stuList');
+  if(!state.students.length){box.innerHTML='<div class="empty"><div class="big">👨‍🎓</div>暂无学生答案，点击下方「添加学生」或「批量粘贴」。</div>';return;}
+  box.innerHTML = state.students.map((s,i)=>`
+    <div class="stu-item">
+      <div class="stu-head">
+        <span style="font-size:12px;color:var(--muted)">#${i+1}</span>
+        <input type="text" placeholder="学生姓名（可选）" value="${esc(s.name)}" data-id="${s.id}" data-f="name" />
+        <label class="switch" style="margin:0"><input type="file" accept="image/*" data-id="${s.id}" data-f="img" style="display:none"/>📷 上传答案图片</label>
+        <button class="btn btn-ghost btn-sm" data-id="${s.id}" data-f="del">删除</button>
+      </div>
+      <div class="stu-body">
+        <textarea placeholder="粘贴学生答案…" data-id="${s.id}" data-f="text">${esc(s.text)}</textarea>
+        ${s.images.length?`<div class="img-preview">${s.images.map((im,j)=>`<img class="thumb" src="${im}" data-id="${s.id}" data-img="${j}" title="点击删除图片" />`).join('')}</div>`:''}
+      </div>
+    </div>`).join('');
+}
+function bindStudents(){
+  $('#stuList').addEventListener('input',e=>{
+    const el=e.target; if(!el.dataset.id) return;
+    const s=state.students.find(x=>x.id===el.dataset.id); if(!s) return;
+    if(el.dataset.f==='name') s.name=el.value;
+    if(el.dataset.f==='text') s.text=el.value;
+  });
+  $('#stuList').addEventListener('click',e=>{
+    const el=e.target;
+    if(el.dataset.f==='del'){state.students=state.students.filter(x=>x.id!==el.dataset.id);renderStudents();}
+    if(el.dataset.img!==undefined){const s=state.students.find(x=>x.id===el.dataset.id);if(s){s.images.splice(+el.dataset.img,1);renderStudents();}}
+  });
+  $('#stuList').addEventListener('change',e=>{
+    const el=e.target;
+    if(el.dataset.f==='img' && el.files && el.files[0]){
+      const s=state.students.find(x=>x.id===el.dataset.id);
+      const file=el.files[0];
+      if(file.size>6*1024*1024){toast('图片过大，请压缩至 6MB 以内','err');return;}
+      const r=new FileReader();
+      r.onload=()=>{s.images.push(r.result);renderStudents();};
+      r.readAsDataURL(file);
+    }
+  });
+}
+function batchPaste(){
+  const txt=prompt('请粘贴学生答案，每位学生一份，用「====」或空行分隔：\n\n例如：\n张三的答案内容\n====\n李四的答案内容');
+  if(txt==null) return;
+  const parts=txt.split(/\n\s*={2,}\s*\n|\n\s*\n/).map(s=>s.trim()).filter(Boolean);
+  if(!parts.length){toast('未识别到有效内容','err');return;}
+  state.students=[];
+  parts.forEach(p=>addStudent({text:p}));
+  toast('已导入 '+parts.length+' 份答案');
+}
+
+/* ================= 评分标准 ================= */
+function fillSubjectSelects(){
+  $('#gradeSubject').innerHTML = state.subjects.map(s=>`<option>${s}</option>`).join('');
+  $('#tplSubject').innerHTML = state.subjects.map(s=>`<option>${s}</option>`).join('');
+  $('#examSubject').innerHTML = state.subjects.map(s=>`<option>${s}</option>`).join('');
+  $('#brSubject').innerHTML = state.subjects.map(s=>`<option>${s}</option>`).join('');
+}
+function renderTemplates(){
+  const box=$('#tplList');
+  if(!state.templates.length){box.innerHTML='<div class="empty">暂无模板，点击「新建模板」创建。</div>';return;}
+  box.innerHTML=state.templates.map(t=>`
+    <div class="tpl-item">
+      <div class="grow">
+        <div class="name">${esc(t.name)}</div>
+        <div class="meta">${esc(t.subject)} · 满分未定 · 创建于本地</div>
+      </div>
+      <button class="btn btn-ghost btn-sm" data-tpl="${t.id}" data-act="load">在阅卷中使用</button>
+      <button class="btn btn-ghost btn-sm" data-tpl="${t.id}" data-act="edit">编辑</button>
+      <button class="btn btn-danger btn-sm" data-tpl="${t.id}" data-act="del">删除</button>
+    </div>`).join('');
+  $('#gradeTemplate').innerHTML='<option value="">— 手动填写 —</option>'+state.templates.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('');
+}
+function applyTemplate(id){
+  const t=state.templates.find(x=>x.id===id); if(!t) return;
+  $('#gradeSubject').value=t.subject;
+  $('#gradeQuestion').value=t.question.replace(/^题目：/,'').replace(/^题目:/,'');
+  $('#gradeReference').value=t.reference.replace(/^参考答案：/,'').replace(/^参考答案:/,'');
+  $('#gradePoints').value=t.points.replace(/^得分点：?\s*/,'');
+  $('#gradeWrong').value=t.wrong.replace(/^不得分答案：?\s*/,'');
+  $('#gradeNote').value=t.note.replace(/^备注：?/,'');
+  toast('已加载模板「'+t.name+'」','ok');
+}
+function openTplModal(id){
+  const t=id?state.templates.find(x=>x.id===id):null;
+  $('#tplModalTitle').textContent=t?'编辑模板':'新建评分标准模板';
+  $('#tplName').value=t?t.name:'';
+  $('#tplSubject').value=t?t.subject:'语文';
+  $('#tplQuestion').value=t?(t.question||'').replace(/^题目：?/,''):'';
+  $('#tplReference').value=t?(t.reference||'').replace(/^参考答案：?/,''):'';
+  $('#tplPoints').value=t?(t.points||'').replace(/^得分点：?\s*/,''):'';
+  $('#tplWrong').value=t?(t.wrong||'').replace(/^不得分答案：?\s*/,''):'';
+  $('#tplNote').value=t?(t.note||'').replace(/^备注：?/,''):'';
+  $('#tplModal').dataset.id=t?t.id:'';
+  $('#tplModal').classList.add('show');
+}
+function saveTplModal(){
+  const name=$('#tplName').value.trim()||'未命名模板';
+  const obj={
+    id:$('#tplModal').dataset.id||uid(),
+    name, subject:$('#tplSubject').value,
+    question:'题目：'+$('#tplQuestion').value.trim(),
+    reference:'参考答案：'+$('#tplReference').value.trim(),
+    points:'得分点：\n'+$('#tplPoints').value.trim(),
+    wrong:'不得分答案：\n'+$('#tplWrong').value.trim(),
+    note:'备注：'+$('#tplNote').value.trim(),
+  };
+  const i=state.templates.findIndex(x=>x.id===obj.id);
+  if(i>=0) state.templates[i]=obj; else state.templates.push(obj);
+  save('templates',state.templates);
+  $('#tplModal').classList.remove('show');
+  renderTemplates(); toast('模板已保存','ok');
+}
+
+/* ================= AI 评分核心 ================= */
+function buildGradingPrompt(stu){
+  const q=$('#gradeQuestion').value.trim();
+  const ref=$('#gradeReference').value.trim();
+  const pts=$('#gradePoints').value.trim();
+  const wrong=$('#gradeWrong').value.trim();
+  const note=$('#gradeNote').value.trim();
+  const full=$('#gradeFullScore').value||'6';
+  const subject=$('#gradeSubject').value;
+  const name=stu.name||'该学生';
+  let sys='你是一位严谨、公正的阅卷老师，擅长按评分标准给主观题精确评分。你必须只输出一个合法的 JSON 对象，不要输出任何其他文字。';
+  let user=`【科目】${subject}\n【本题满分】${full} 分\n\n【题目】\n${q||'（未提供）'}\n\n【参考答案】\n${ref||'（未提供）'}\n\n【得分点】\n${pts||'（未提供）'}\n\n【不得分答案】\n${wrong||'（未提供）'}\n\n【评卷备注】\n${note||'（无）'}\n\n【学生答案】\n${stu.text||'（学生未作答，若配有图片请结合图片判断）'}\n\n请严格按评分标准给该学生答案评分，输出 JSON 对象，字段如下：\n{\n  "score": 数字（该生最终得分，0 到满分之间，可含 0.5）,\n  "fullScore": 数字（满分）,\n  "rate": 数字（得分率，0-100 保留一位小数）,\n  "details": [{"point":"得分点描述","max":该点满分,"awarded":该点实得,"comment":"给分/扣分理由"}],\n  "deduction": "扣分原因简述",\n  "comment": "总体评语（1-2 句）",\n  "suggestion": "改进建议（1-2 句）"\n}`;
+  return {sys,user,images:stu.images};
+}
+async function gradeOneStudent(stu){
+  const {sys,user,images}=buildGradingPrompt(stu);
+  const messages=[{role:'system',content:sys},{role:'user',content:user}];
+  if(images && images.length){
+    const content=[{type:'text',text:user}];
+    images.slice(0,4).forEach(im=>content.push({type:'image_url',image_url:{url:im}}));
+    messages[1]={role:'user',content};
+  }
+  const raw=await callAI(messages,{json:true});
+  const j=parseAIJson(raw);
+  j.score = Number(j.score); j.fullScore = Number(j.fullScore)||Number($('#gradeFullScore').value)||0;
+  j.rate = j.rate!=null?Number(j.rate):(j.fullScore?Math.round(j.score/j.fullScore*1000)/10:0);
+  j.details = Array.isArray(j.details)?j.details:[];
+  return j;
+}
+async function runGrading(){
+  if(!state.settings.apiKey){toast('请先在「设置」中配置 API Key','err');switchView('settings');return;}
+  const valid=state.students.filter(s=>s.text.trim()||s.images.length);
+  if(!valid.length){toast('请先添加学生答案','err');return;}
+  if(!$('#gradeQuestion').value.trim()){toast('请填写题目内容','err');return;}
+  const btn=$('#btnStartGrade'); btn.disabled=true; btn.textContent='⏳ 阅卷中…';
+  const prog=$('#gradeProgress'); state.gradeResults=[];
+  const subject=$('#gradeSubject').value, full=Number($('#gradeFullScore').value)||6;
+  for(let i=0;i<valid.length;i++){
+    prog.textContent=`正在批改第 ${i+1}/${valid.length} 份…`;
+    try{
+      const r=await gradeOneStudent(valid[i]);
+      const rec={id:uid(),student:valid[i].name||('学生'+(i+1)),subject,
+        question:$('#gradeQuestion').value.trim().slice(0,80),
+        score:r.score,fullScore:r.fullScore||full,rate:r.rate,
+        details:r.details,deduction:r.deduction,comment:r.comment,suggestion:r.suggestion,
+        time:new Date().toLocaleString('zh-CN')};
+      state.gradeResults.push(rec); state.records.push(rec);
+    }catch(e){toast('第 '+(i+1)+' 份批改失败：'+e.message,'err');}
+  }
+  save('records',state.records);
+  prog.textContent='';
+  btn.disabled=false; btn.textContent='🚀 开始 AI 阅卷';
+  renderResults();
+  toast('阅卷完成，共 '+state.gradeResults.length+' 份','ok');
+}
+function scoreClass(r){return r>=0.85?'score-high':(r>=0.6?'score-mid':'score-low');}
+function renderResults(){
+  const box=$('#resultList');
+  if(!state.gradeResults.length) return;
+  $('#resultCard').style.display='';
+  box.innerHTML=state.gradeResults.map((r,i)=>`
+    <div class="stu-item" style="margin-bottom:14px">
+      <div class="stu-head">
+        <span class="score-badge ${scoreClass(r.rate/100)}">${r.score} / ${r.fullScore}</span>
+        <span style="font-weight:600">${esc(r.student)}</span>
+        <span style="font-size:12px;color:var(--muted)">${esc(r.subject)} · 得分率 ${r.rate}%</span>
+      </div>
+      <div class="stu-body">
+        <div style="margin-bottom:6px">
+          ${(r.details||[]).map(d=>`<div class="detail-point"><span class="pt">· ${esc(d.point||'')}</span><span class="pt-score">${d.awarded} / ${d.max} 分</span></div>`).join('')}
+        </div>
+        ${r.deduction?`<div style="font-size:12px;color:var(--amber);margin:4px 0">✂️ 扣分：${esc(r.deduction)}</div>`:''}
+        ${r.comment?`<div style="font-size:13px;margin-top:6px">💬 ${esc(r.comment)}</div>`:''}
+        ${r.suggestion?`<div style="font-size:13px;color:var(--accent2);margin-top:4px">📈 ${esc(r.suggestion)}</div>`:''}
+      </div>
+    </div>`).join('');
+}
+
+/* ================= 授权激活（买断制） ================= */
+const LICENSE_SECRET = 'YJAI20261018';
+
+async function hmacHex(secret, message){
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey('raw', enc.encode(secret), {name:'HMAC', hash:'SHA-256'}, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(message));
+  const bytes = new Uint8Array(sig);
+  return Array.from(bytes).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+async function genLicenseKey(machineCode){
+  const hex = await hmacHex(LICENSE_SECRET, machineCode);
+  return hex.slice(0,16).toUpperCase().match(/.{4}/g).join('-');
+}
+async function verifyLicense(machineCode, key){
+  const normalized = (key||'').replace(/[^0-9a-fA-F]/g,'').toUpperCase();
+  const hex = await hmacHex(LICENSE_SECRET, machineCode);
+  return normalized === hex.slice(0,16).toUpperCase();
+}
+
+let licenseState = { machineCode:'', licenseKey:'', activated:false };
+function loadLicense(){ try{ const v = localStorage.getItem('yjai_license'); if(v){ const o = JSON.parse(v); if(o) licenseState = Object.assign(licenseState, o); } }catch(e){} }
+function saveLicense(){ try{ localStorage.setItem('yjai_license', JSON.stringify(licenseState)); }catch(e){} }
+function isLicensed(){ return !!licenseState.activated; }
+
+/* 试用期：首次启动起 3 天内浏览器自动化阅卷可用 */
+const TRIAL_DAYS = 3;
+function getTrialInfo(){
+  let firstUse = null;
+  try{ firstUse = localStorage.getItem('yjai_first_use'); }catch(e){}
+  if(!firstUse){
+    firstUse = String(Date.now());
+    try{ localStorage.setItem('yjai_first_use', firstUse); }catch(e){}
+  }
+  const firstUseTime = parseInt(firstUse, 10);
+  const elapsed = Date.now() - firstUseTime;
+  const trialMs = TRIAL_DAYS * 86400000;
+  const remainingMs = trialMs - elapsed;
+  const remainingDays = Math.max(0, remainingMs / 86400000);
+  return { firstUseTime, remainingMs, remainingDays, trialActive: remainingMs > 0 };
+}
+function hasBrowserAccess(){
+  return isLicensed() || getTrialInfo().trialActive;
+}
+
+async function initLicense(){
+  loadLicense();
+  if(IS_DESKTOP && window.YJAI && window.YJAI.getMachineId){
+    try{
+      const mc = await window.YJAI.getMachineId();
+      licenseState.machineCode = mc;
+      if(licenseState.licenseKey){
+        licenseState.activated = await verifyLicense(mc, licenseState.licenseKey);
+      } else {
+        licenseState.activated = false;
+      }
+      saveLicense();
+    }catch(e){ licenseState.activated = false; }
+  }
+  renderLicenseUI();
+}
+async function activateLicense(){
+  const mc = licenseState.machineCode;
+  if(!mc){ toast('无法获取机器码，请重试','err'); return; }
+  const key = $('#licenseKeyInput').value.trim();
+  if(!key){ toast('请输入激活码','err'); return; }
+  const ok = await verifyLicense(mc, key);
+  if(ok){
+    licenseState.licenseKey = key.replace(/[^0-9A-Fa-f]/g,'').toUpperCase().match(/.{4}/g).join('-');
+    licenseState.activated = true;
+    saveLicense();
+    renderLicenseUI();
+    initBrowser();
+    toast('激活成功，专业功能已解锁','ok');
+  } else {
+    toast('激活码无效，请核对机器码与激活码','err');
+  }
+}
+function renderLicenseUI(){
+  const st = $('#licenseStatus');
+  if(st){
+    if(licenseState.activated){
+      st.innerHTML = '<span style="color:var(--green)">✅ 已激活 · 专业版（买断授权）</span>';
+    } else {
+      const trial = getTrialInfo();
+      if(trial.trialActive){
+        const d = trial.remainingDays < 1 ? (Math.max(1, Math.ceil(trial.remainingDays*24))+' 小时') : (Math.ceil(trial.remainingDays)+' 天');
+        st.innerHTML = '<span style="color:var(--amber)">⏳ 试用中 · 剩余 '+d+' · 浏览器自动化阅卷可用</span>';
+      } else {
+        st.innerHTML = '<span style="color:var(--red)">🔒 试用已结束 · 浏览器自动化阅卷需激活后使用</span>';
+      }
+    }
+  }
+  const mcInput = $('#machineCode');
+  if(mcInput) mcInput.value = licenseState.machineCode || '（桌面版启动后自动获取）';
+  const li = $('#licenseKeyInput');
+  if(li && licenseState.activated) li.value = licenseState.licenseKey;
+}
+function applyLicenseLock(){
+  const lock = $('#browserLock');
+  const main = $('#browserMain');
+  if(lock && main){
+    if(licenseState.activated){
+      lock.style.display = 'none';
+      main.style.display = '';
+    } else {
+      lock.style.display = '';
+      main.style.display = 'none';
+    }
+  }
+}
+
+/* ================= 浏览器阅卷 ================= */
+const IS_DESKTOP = !!(window.YJAI && window.YJAI.isDesktop);
+let brState = { engine:'edge', area:null, selectors:{input:'',submit:'',meta:''}, running:false, done:0, sum:0, lastResult:null };
+let browserReady = false;
+function saveBr(){ try{localStorage.setItem('yjai_br',JSON.stringify({engine:brState.engine,area:brState.area,selectors:brState.selectors}));}catch(e){} }
+function loadBr(){ try{const v=localStorage.getItem('yjai_br');if(v){const o=JSON.parse(v);if(o){if(o.engine)brState.engine=o.engine;if(o.area)brState.area=o.area;if(o.selectors)brState.selectors=o.selectors;}}}catch(e){} }
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+function brLog(msg,cls){ const el=$('#brLog'); const d=document.createElement('div'); d.className=cls||'i'; d.textContent='['+new Date().toLocaleTimeString('zh-CN')+'] '+msg; el.appendChild(d); el.scrollTop=el.scrollHeight; }
+function brSetStatus(t){ const el=$('#brStatus'); el.innerHTML='<span>'+esc(t)+'</span>'; }
+function normalizeUrl(url){ if(!url) return url; if(!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) url='https://'+url; return url; }
+function brRelay(action, data){ return window.YJAI.relayToBrowser({ id:uid(), action:action, data:data }); }
+
+function initBrowser(){
+  if(!IS_DESKTOP){
+    $('#browserNeedDesktop').style.display='';
+    $('#browserMain').style.display='none';
+    $('#browserLock').style.display='none';
+    return;
+  }
+  $('#browserNeedDesktop').style.display='none';
+  if(!hasBrowserAccess()){
+    $('#browserLock').style.display='';
+    $('#browserMain').style.display='none';
+    return;
+  }
+  $('#browserLock').style.display='none';
+  $('#browserMain').style.display='';
+  loadBr();
+  $('#brEngine').value = brState.engine;
+  if(brState.area){
+    $('#brAreaInfo').textContent = 'X:'+brState.area.x+'  Y:'+brState.area.y+'  W:'+brState.area.w+'  H:'+brState.area.h;
+  }
+  if(!browserReady){ bindBrowserEvents(); browserReady = true; }
+  updatePickTags();
+  updateMonitor();
+}
+
+async function brOpen(){
+  const url = normalizeUrl($('#brUrl').value.trim());
+  if(!url){ toast('请输入阅卷平台网址','err'); return; }
+  try{
+    await window.YJAI.openBrowserWindow('');
+    await sleep(800);
+    await brRelay('set-ua', brState.engine);
+    if(url) await brRelay('navigate', url);
+    brSetStatus('浏览器窗口已打开');
+    brLog('浏览器窗口已打开：'+url);
+    toast('浏览器窗口已打开','ok');
+  }catch(e){ toast('打开失败: '+e.message,'err'); }
+}
+
+async function startAreaSelect(){
+  if(!IS_DESKTOP) return;
+  await window.YJAI.focusBrowserWindow();
+  const btn = $('#brSelectArea');
+  if(btn) btn.classList.add('picking');
+  brSetStatus('已跳转到浏览器窗口，请在页面中框选答题区域…');
+  const r = await brRelay('start-select');
+  if(btn) btn.classList.remove('picking');
+  brSetStatus('就绪');
+  if(r && r.error){ toast(r.error,'err'); return; }
+  if(r && r.cancel) return;
+  if(r && r.type==='area' && r.area){
+    brState.area = r.area; saveBr();
+    $('#brAreaInfo').textContent = 'X:'+r.area.x+'  Y:'+r.area.y+'  W:'+r.area.w+'  H:'+r.area.h;
+    brLog('框选答题区域 ('+r.area.w+'×'+r.area.h+')');
+    toast('已框选答题区域 ('+r.area.w+'×'+r.area.h+')','ok');
+  }
+}
+async function startPick(target){
+  if(!IS_DESKTOP) return;
+  await window.YJAI.focusBrowserWindow();
+  const btnMap = {input:'#brPickInput', submit:'#brPickSubmit', meta:'#brPickMeta'};
+  const btn = $(btnMap[target]);
+  if(btn) btn.classList.add('picking');
+  brSetStatus('已跳转到浏览器窗口，请在页面中点击对应元素…');
+  const r = await brRelay('start-pick', target);
+  if(btn) btn.classList.remove('picking');
+  brSetStatus('就绪');
+  if(r && r.error){ toast(r.error,'err'); return; }
+  if(r && r.cancel) return;
+  if(r && r.type==='pick' && r.selector){
+    brState.selectors[target] = r.selector; saveBr(); updatePickTags();
+    const label = { input:'分数输入框', submit:'提交按钮', meta:'元数据' }[target];
+    brLog('已拾取'+label+': '+r.selector);
+    toast('拾取成功: '+r.selector,'ok');
+  }
+}
+async function captureAreaRaw(){
+  const a = brState.area;
+  const r = await brRelay('capture', a);
+  if(r && r.error) throw new Error(r.error);
+  return r.dataUrl;
+}
+async function testShot(){
+  if(!brState.area){ toast('请先框选答题区域','err'); return null; }
+  brSetStatus('截图中…');
+  try{
+    const url = await captureAreaRaw();
+    const p = $('#brShotPreview'); p.src = url; p.style.display='block';
+    toast('截图成功','ok');
+    return url;
+  }catch(e){ toast('截图失败: '+e.message,'err'); brLog('截图失败: '+e.message,'e'); return null; }
+}
+async function fillScoreInPage(score){
+  const sel = brState.selectors.input;
+  if(!sel){ toast('请先拾取分数输入框','err'); return false; }
+  const r = await brRelay('fill-score', { selector:sel, score:score });
+  if(r && r.error){ toast(r.error,'err'); return false; }
+  if(r && r.result==='NOT_FOUND'){ toast('分数输入框未找到，页面可能已变化，请重新拾取','err'); brLog('分数输入框未找到（'+sel+'）','e'); return false; }
+  if(r && r.result==='NOT_INPUT'){ toast('拾取的元素不是输入框，请重新拾取分数输入框','err'); brLog('拾取的元素不是输入框（'+sel+'）','e'); return false; }
+  return !!(r && r.ok);
+}
+async function clickSubmitInPage(){
+  const sel = brState.selectors.submit;
+  if(!sel){ toast('请先拾取提交按钮','err'); return false; }
+  const r = await brRelay('click-submit', sel);
+  if(r && r.error){ toast(r.error,'err'); return false; }
+  if(r && r.result==='NOT_FOUND'){ toast('提交按钮未找到，页面可能已变化，请重新拾取','err'); brLog('提交按钮未找到（'+sel+'）','e'); return false; }
+  return !!(r && r.ok);
+}
+async function testSubmit(){
+  const score = prompt('请输入测试分数（例如 5）','5');
+  if(score==null) return;
+  if(!/^\d+(\.\d+)?$/.test(score)){ toast('请输入有效数字','err'); return; }
+  const ok = await fillScoreInPage(score);
+  if(!ok){ toast('分数输入框未找到，请重新拾取','err'); return; }
+  await sleep(400);
+  const ok2 = await clickSubmitInPage();
+  toast(ok2?'测试提交成功，请到浏览器窗口确认':'提交按钮未找到，请重新拾取', ok2?'ok':'err');
+}
+async function gradeImageByStandard(base64Image){
+  const criteria = $('#brCriteria').value.trim();
+  const full = $('#brFullScore').value || '6';
+  const subject = $('#brSubject').value;
+  const mode = $('#brMode').value;
+  const sys = '你是一位严谨、公正的阅卷老师。你必须只输出一个合法的 JSON 对象，不要输出任何其他文字。';
+  const text = '【科目】'+subject+'\n【阅卷模式】'+mode+'\n【本题满分】'+full+' 分\n【评分标准】\n'+(criteria||'（未提供）')+'\n\n请根据学生答案的截图，严格按以上评分标准评分，输出 JSON 对象：\n{"score":数字(0到满分之间，可含0.5),"comment":"评语(1句，含给分/扣分理由)"}';
+  const messages = [
+    { role:'system', content:sys },
+    { role:'user', content:[ {type:'text',text:text}, {type:'image_url',image_url:{url:base64Image}} ] }
+  ];
+  const raw = await callAI(messages, {json:true});
+  const j = parseAIJson(raw);
+  j.score = Number(j.score) || 0;
+  return j;
+}
+async function startAuto(){
+  if(!state.settings.apiKey){ toast('请先在「设置」中配置 API Key','err'); switchView('settings'); return; }
+  if(!IS_DESKTOP) return;
+  const opened = await window.YJAI.isBrowserOpen();
+  if(!opened){ toast('请先点击「🌐 打开浏览器」','err'); return; }
+  if(!brState.area){ toast('请先框选答题区域','err'); return; }
+  if(!brState.selectors.input || !brState.selectors.submit){ toast('请先拾取分数输入框与提交按钮','err'); return; }
+  if(!$('#brCriteria').value.trim()){ toast('请填写评分标准','err'); return; }
+  const count = Number($('#brCount').value) || 10;
+  brState.running = true; brState.done = 0; brState.sum = 0; brState.lastResult = null;
+  $('#brStart').disabled = true; $('#brStart').textContent = '⏳ 运行中';
+  $('#brLog').innerHTML = '';
+  brLog('开始自动阅卷，共 '+count+' 份');
+  for(let i=0; i<count && brState.running; i++){
+    const n = i+1;
+    brSetStatus('第 '+n+' 份：截图中…');
+    brLog('第 '+n+' 份：截图中…');
+    let shot;
+    try{ shot = await captureAreaRaw(); }catch(e){ brLog('截图失败: '+e.message,'e'); break; }
+    if(!shot) break;
+    brSetStatus('第 '+n+' 份：AI 评分中…');
+    brLog('第 '+n+' 份：AI 评分中…');
+    let result;
+    try{ result = await gradeImageByStandard(shot); }catch(e){ brLog('评分失败: '+e.message,'e'); await sleep(800); continue; }
+    brSetStatus('第 '+n+' 份：得分 '+result.score+'，提交中…');
+    brLog('第 '+n+' 份：得分 '+result.score+'，提交中…');
+    const okFill = await fillScoreInPage(result.score);
+    if(!okFill){ brLog('分数输入框未找到，请重新拾取','w'); break; }
+    await sleep(400);
+    const okSub = await clickSubmitInPage();
+    if(!okSub){ brLog('提交按钮未找到，请重新拾取','w'); break; }
+    brState.done++; brState.sum += result.score; brState.lastResult = result;
+    const fullScore = Number($('#brFullScore').value)||6;
+    state.records.push({ id:uid(), student:'（浏览器阅卷）'+brState.done, subject:$('#brSubject').value, question:$('#brCriteria').value.trim().slice(0,80), score:result.score, fullScore:fullScore, rate:fullScore?Math.round(result.score/fullScore*1000)/10:0, details:[], deduction:'', comment:result.comment||'', suggestion:'', time:new Date().toLocaleString('zh-CN') });
+    save('records', state.records);
+    updateMonitor();
+    brLog('第 '+n+' 份完成 ✓ 得分 '+result.score, 'i');
+    if(i < count-1 && brState.running){
+      brSetStatus('等待下一题加载…');
+      await sleep((Number($('#brInterval').value)||3)*1000);
+    }
+  }
+  brState.running = false;
+  $('#brStart').disabled = false; $('#brStart').textContent = '▶ 开始阅卷';
+  brSetStatus('阅卷结束，共完成 '+brState.done+' 份');
+  brLog('阅卷结束，共完成 '+brState.done+' 份');
+  toast('阅卷结束，共 '+brState.done+' 份','ok');
+}
+function updateMonitor(){
+  $('#brMCount').textContent = brState.done;
+  $('#brMAvg').textContent = brState.done ? (brState.sum/brState.done).toFixed(1) : '—';
+  $('#brMLast').textContent = brState.lastResult ? (brState.lastResult.score+' 分') : '—';
+}
+function updatePickTags(){
+  const s = brState.selectors;
+  $('#brTagInput').textContent = s.input?'已拾取':'未拾取';
+  $('#brTagInput').className = 'br-tag'+(s.input?' ok':'');
+  $('#brTagSubmit').textContent = s.submit?'已拾取':'未拾取';
+  $('#brTagSubmit').className = 'br-tag'+(s.submit?' ok':'');
+  $('#brTagMeta').textContent = s.meta?'已拾取':'未拾取';
+  $('#brTagMeta').className = 'br-tag'+(s.meta?' ok':'');
+  $('#brSelectorInfo').textContent = '分数输入框：'+(s.input||'未配置')+'　提交按钮：'+(s.submit||'未配置');
+}
+function bindBrowserEvents(){
+  $('#brOpenWin').onclick = brOpen;
+  $('#brFocusWin').onclick = ()=>{ window.YJAI.focusBrowserWindow(); };
+  $('#brCloseWin').onclick = ()=>{ window.YJAI.closeBrowserWindow(); brSetStatus('浏览器窗口已关闭'); };
+  $('#brUrl').addEventListener('keydown',e=>{ if(e.key==='Enter') brOpen(); });
+  $('#brEngine').addEventListener('change',async e=>{
+    brState.engine = e.target.value; saveBr();
+    await brRelay('set-ua', brState.engine);
+    toast('已切换为 '+(brState.engine==='edge'?'Edge':'Chrome')+' 内核','ok');
+  });
+  $('#brSelectArea').onclick = startAreaSelect;
+  $('#brTestShot').onclick = testShot;
+  $('#brPickInput').onclick = ()=>startPick('input');
+  $('#brPickSubmit').onclick = ()=>startPick('submit');
+  $('#brPickMeta').onclick = ()=>startPick('meta');
+  $('#brTestSubmit').onclick = testSubmit;
+  $('#brStart').onclick = startAuto;
+  $('#brStop').onclick = ()=>{ brState.running=false; brLog('收到停止请求，将在当前题结束后停止','w'); };
+  $('#brPreviewBtn').onclick = toggleBrPreview;
+}
+
+let brPreviewOn = false;
+function toggleBrPreview(){
+  brPreviewOn = !brPreviewOn;
+  const ta = $('#brCriteria'), pv = $('#brCriteriaPreview');
+  if(brPreviewOn){
+    pv.innerHTML = renderMarkdownWithMath(ta.value);
+    pv.style.display = '';
+    ta.style.display = 'none';
+    $('#brPreviewBtn').textContent = '✏️ 编辑';
+  } else {
+    pv.style.display = 'none';
+    ta.style.display = '';
+    $('#brPreviewBtn').textContent = '👁 预览';
+  }
+}
+
+/* ================= 整卷阅卷 ================= */
+function saveExam(){ try{localStorage.setItem('yjai_exam',JSON.stringify({title:examState.title,subject:examState.subject,questions:examState.questions,students:examState.students}));}catch(e){} }
+function loadExam(){
+  try{
+    const v=localStorage.getItem('yjai_exam');
+    if(v){const o=JSON.parse(v);if(o&&Array.isArray(o.questions)&&o.questions.length){examState.title=o.title||'';examState.subject=o.subject||'语文';examState.questions=o.questions;examState.students=o.students||[];return true;}}
+  }catch(e){}
+  return false;
+}
+function newQuestion(num){ return {id:uid(),num:num,text:'',fullScore:6,reference:'',points:'',wrong:'',note:''}; }
+function initExam(){
+  if(!loadExam()){
+    examState.title=''; examState.subject='语文';
+    examState.questions=[newQuestion(1),newQuestion(2),newQuestion(3)];
+    examState.students=[];
+  }
+  examState.results=[];
+}
+function renderExamQuestions(){
+  const box=$('#examQuestions');
+  if(!examState.questions.length){box.innerHTML='<div class="empty">暂无题目，点击「添加题目」。</div>';return;}
+  box.innerHTML=examState.questions.map((q,i)=>`
+    <div class="stu-item" style="margin-bottom:12px">
+      <div class="stu-head">
+        <span class="score-badge score-mid">第 ${q.num} 题</span>
+        <span class="grow" style="font-size:13px">满分
+          <input type="number" data-q="${q.id}" data-f="fullScore" value="${q.fullScore}" min="0.5" step="0.5" style="width:72px;display:inline-block;margin:0 6px;padding:4px 8px" /> 分
+        </span>
+        <button class="btn btn-danger btn-sm" data-q="${q.id}" data-act="delq">删除</button>
+      </div>
+      <div class="stu-body">
+        <label>题目内容</label>
+        <textarea data-q="${q.id}" data-f="text" placeholder="请输入第 ${q.num} 题的题目">${esc(q.text)}</textarea>
+        <div class="grid2" style="margin-top:10px">
+          <div><label>参考答案</label><textarea data-q="${q.id}" data-f="reference">${esc(q.reference)}</textarea></div>
+          <div><label>得分点</label><textarea data-q="${q.id}" data-f="points">${esc(q.points)}</textarea></div>
+        </div>
+        <div class="grid2" style="margin-top:10px">
+          <div><label>不得分答案</label><textarea data-q="${q.id}" data-f="wrong">${esc(q.wrong)}</textarea></div>
+          <div><label>备注</label><textarea data-q="${q.id}" data-f="note">${esc(q.note)}</textarea></div>
+        </div>
+      </div>
+    </div>`).join('');
+}
+function renderExamStudents(){
+  const box=$('#examStudents');
+  if(!examState.questions.length){box.innerHTML='<div class="hint">请先在上方添加题目，再填写学生答卷。</div>';return;}
+  if(!examState.students.length){box.innerHTML='<div class="empty"><div class="big">👨‍🎓</div>暂无学生，点击「添加学生」或「从剪贴板批量导入」。</div>';return;}
+  box.innerHTML=examState.students.map((s,si)=>`
+    <div class="stu-item" style="margin-bottom:12px">
+      <div class="stu-head">
+        <span style="font-size:12px;color:var(--muted)">#${si+1}</span>
+        <input type="text" placeholder="学生姓名" data-s="${s.id}" data-f="name" value="${esc(s.name)}" />
+        <button class="btn btn-danger btn-sm" data-s="${s.id}" data-act="dels">删除</button>
+      </div>
+      <div class="stu-body">
+        ${examState.questions.map(q=>`
+          <label>第 ${q.num} 题答案（满分 ${q.fullScore} 分）</label>
+          <textarea data-s="${s.id}" data-q="${q.id}" data-f="answer" placeholder="请填写第 ${q.num} 题答案">${esc(s.answers[q.id]||'')}</textarea>
+        `).join('')}
+      </div>
+    </div>`).join('');
+}
+async function gradeOneExamQuestion(q, answerText){
+  const sys='你是一位严谨、公正的阅卷老师。你必须只输出一个合法的 JSON 对象，不要输出任何其他文字。';
+  const user=`【题目】${q.text||'（未提供）'}\n【本题满分】${q.fullScore} 分\n【参考答案】${q.reference||'（未提供）'}\n【得分点】${q.points||'（未提供）'}\n${q.wrong?'【不得分答案】'+q.wrong+'\n':''}${q.note?'【备注】'+q.note+'\n':''}\n【学生答案】${answerText||'（未作答）'}\n\n请按评分标准评分，输出 JSON 对象：\n{"score":数字(0到满分之间，可含0.5),"comment":"评语(1句，含给分/扣分理由)"}`;
+  const raw=await callAI([{role:'system',content:sys},{role:'user',content:user}],{json:true});
+  const j=parseAIJson(raw);
+  j.score=Number(j.score)||0;
+  return j;
+}
+async function runExam(){
+  if(!state.settings.apiKey){toast('请先在「设置」中配置 API Key','err');switchView('settings');return;}
+  const qs=examState.questions.filter(q=>q.text.trim());
+  if(!qs.length){toast('请先填写至少一道题目','err');return;}
+  const sts=examState.students.filter(s=>s.name.trim()||qs.some(q=>(s.answers[q.id]||'').trim()));
+  if(!sts.length){toast('请先添加学生答卷','err');return;}
+  const btn=$('#btnStartExam'); btn.disabled=true; btn.textContent='⏳ 阅卷中…';
+  const prog=$('#examProgress');
+  const fullTotal=qs.reduce((a,b)=>a+(Number(b.fullScore)||0),0);
+  examState.results=[];
+  for(let si=0;si<sts.length;si++){
+    const s=sts[si], sname=s.name||('学生'+(si+1));
+    let total=0; const scores={};
+    for(let qi=0;qi<qs.length;qi++){
+      const q=qs[qi];
+      prog.textContent=`正在批改 ${sname} · 第 ${qi+1}/${qs.length} 题…`;
+      try{
+        const r=await gradeOneExamQuestion(q, s.answers[q.id]||'');
+        scores[q.id]={score:r.score,comment:r.comment||''};
+        total+=r.score;
+      }catch(e){ scores[q.id]={score:null,comment:'批改失败: '+e.message}; }
+    }
+    examState.results.push({student:sname,scores,total:Math.round(total*10)/10,fullTotal,rate:fullTotal?Math.round(total/fullTotal*1000)/10:0});
+  }
+  examState.results.sort((a,b)=>b.total-a.total);
+  examState.results.forEach((r,i)=>r.rank=i+1);
+  prog.textContent='';
+  btn.disabled=false; btn.textContent='🚀 开始整卷阅卷';
+  renderExamResult();
+  toast('整卷阅卷完成，共 '+examState.results.length+' 份','ok');
+}
+function renderExamResult(){
+  const qs=examState.questions.filter(q=>q.text.trim());
+  const box=$('#examResultTable');
+  if(!examState.results.length){box.innerHTML='';return;}
+  $('#examResultCard').style.display='';
+  const n=examState.results.length;
+  const totals=examState.results.map(r=>r.total);
+  const avg=totals.reduce((a,b)=>a+b,0)/n;
+  const max=Math.max(...totals), min=Math.min(...totals);
+  const pass=examState.results.filter(r=>r.rate>=60).length;
+  const good=examState.results.filter(r=>r.rate>=85).length;
+  $('#examStatRow').innerHTML=`
+    <div class="stat"><div class="v">${n}</div><div class="k">参加人数</div></div>
+    <div class="stat"><div class="v" style="color:var(--accent2)">${avg.toFixed(1)}</div><div class="k">平均分</div></div>
+    <div class="stat"><div class="v" style="color:var(--green)">${max.toFixed(1)}</div><div class="k">最高分</div></div>
+    <div class="stat"><div class="v" style="color:var(--red)">${min.toFixed(1)}</div><div class="k">最低分</div></div>
+    <div class="stat"><div class="v" style="color:var(--green)">${(pass/n*100).toFixed(0)}%</div><div class="k">及格率</div></div>
+    <div class="stat"><div class="v" style="color:var(--purple)">${(good/n*100).toFixed(0)}%</div><div class="k">优秀率</div></div>`;
+  const head=qs.map(q=>`<th>第${q.num}题<br/><span style="font-weight:400;font-size:11px">${q.fullScore}分</span></th>`).join('');
+  box.innerHTML=`<table>
+    <thead><tr><th>排名</th><th>学生</th>${head}<th>总分</th><th>得分率</th></tr></thead>
+    <tbody>${examState.results.map(r=>`
+      <tr>
+        <td>${r.rank}</td>
+        <td>${esc(r.student)}</td>
+        ${qs.map(q=>{const sc=r.scores[q.id]; const v=(sc&&sc.score!=null)?sc.score:'—'; return `<td title="${esc((sc&&sc.comment)||'')}">${v}</td>`;}).join('')}
+        <td><span class="score-badge ${scoreClass(r.rate/100)}">${r.total}</span></td>
+        <td>${r.rate}%</td>
+      </tr>`).join('')}
+    </tbody></table>`;
+  box.closest('.card').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+function exportExamCsv(){
+  if(!examState.results.length){toast('暂无成绩可导出','err');return;}
+  const qs=examState.questions.filter(q=>q.text.trim());
+  const esc2=s=>'"'+String(s??'').replace(/"/g,'""')+'"';
+  const head=['排名','学生',...qs.map(q=>'第'+q.num+'题('+q.fullScore+'分)'),'总分','得分率%'];
+  const rows=examState.results.map(r=>[r.rank,r.student,...qs.map(q=>(r.scores[q.id]&&r.scores[q.id].score!=null)?r.scores[q.id].score:''),r.total,r.rate].map(esc2).join(','));
+  const csv='\ufeff'+head.map(esc2).join(',')+'\n'+rows.join('\n');
+  download((examState.title||'YJAI')+'整卷成绩.csv',csv,'text/csv');
+}
+function exportExamMd(){
+  if(!examState.results.length){toast('暂无成绩可导出','err');return;}
+  const qs=examState.questions.filter(q=>q.text.trim());
+  let md=`# ${examState.title||'整卷阅卷'} 成绩单\n\n`;
+  md+=`- 科目：${examState.subject}\n- 参加人数：${examState.results.length}\n- 试卷总分：${examState.results[0].fullTotal} 分\n\n`;
+  md+='| 排名 | 学生 | '+qs.map(q=>'第'+q.num+'题').join(' | ')+' | 总分 | 得分率 |\n';
+  md+='|'+Array(qs.length+5).fill('---').join('|')+'|\n';
+  examState.results.forEach(r=>{
+    md+=`| ${r.rank} | ${r.student} | `+qs.map(q=>(r.scores[q.id]&&r.scores[q.id].score!=null)?r.scores[q.id].score:'—').join(' | ')+` | ${r.total} | ${r.rate}% |\n`;
+  });
+  md+='\n## 逐题点评\n\n';
+  examState.results.forEach(r=>{
+    md+=`### ${r.student}（总分 ${r.total}）\n`;
+    qs.forEach(q=>{const sc=r.scores[q.id]; if(sc&&sc.comment) md+=`- 第${q.num}题（${sc.score}/${q.fullScore}）：${sc.comment}\n`;});
+    md+='\n';
+  });
+  download((examState.title||'YJAI')+'整卷成绩.md',md,'text/markdown');
+}
+function pasteExamBatch(){
+  const q=examState.questions;
+  if(!q.length){toast('请先添加题目','err');return;}
+  const txt=prompt('批量导入学生答卷格式：\n每位学生一个块，用「====」分隔；第一行为姓名，后续每行按题号顺序对应一道题的答案。\n\n例如：\n张三\n第一题答案\n第二题答案\n====\n李四\n第一题答案\n第二题答案');
+  if(txt==null) return;
+  const blocks=txt.split(/\n\s*={2,}\s*\n/).map(s=>s.trim()).filter(Boolean);
+  if(!blocks.length){toast('未识别到有效内容','err');return;}
+  let cnt=0;
+  blocks.forEach(block=>{
+    const lines=block.split(/\n/).map(s=>s.trim());
+    if(!lines.length) return;
+    const s={id:uid(),name:lines[0]||'',answers:{}};
+    q.forEach((qq,i)=>{ s.answers[qq.id]=lines[i+1]||''; });
+    examState.students.push(s); cnt++;
+  });
+  saveExam(); renderExamStudents();
+  toast('已导入 '+cnt+' 名学生答卷','ok');
+}
+function bindExamEvents(){
+  $('#examTitle').addEventListener('input',e=>{examState.title=e.target.value;saveExam();});
+  $('#examSubject').addEventListener('change',e=>{examState.subject=e.target.value;saveExam();});
+  $('#btnAddQuestion').onclick=()=>{
+    examState.questions.push(newQuestion(examState.questions.length+1));
+    saveExam(); renderExamQuestions(); renderExamStudents();
+  };
+  $('#examQuestions').addEventListener('input',e=>{
+    const el=e.target; if(!el.dataset.q) return;
+    const q=examState.questions.find(x=>x.id===el.dataset.q); if(!q) return;
+    if(el.dataset.f==='fullScore') q.fullScore=Number(el.value)||0; else q[el.dataset.f]=el.value;
+    saveExam();
+  });
+  $('#examQuestions').addEventListener('click',e=>{
+    const b=e.target.closest('button[data-act="delq"]'); if(!b) return;
+    examState.questions=examState.questions.filter(x=>x.id!==b.dataset.q);
+    examState.questions.forEach((q,i)=>q.num=i+1);
+    saveExam(); renderExamQuestions(); renderExamStudents();
+  });
+  $('#btnAddExamStudent').onclick=()=>{
+    examState.students.push({id:uid(),name:'',answers:{}});
+    saveExam(); renderExamStudents();
+  };
+  $('#examStudents').addEventListener('input',e=>{
+    const el=e.target; if(!el.dataset.s) return;
+    const s=examState.students.find(x=>x.id===el.dataset.s); if(!s) return;
+    if(el.dataset.f==='name') s.name=el.value; else s.answers[el.dataset.q]=el.value;
+    saveExam();
+  });
+  $('#examStudents').addEventListener('click',e=>{
+    const b=e.target.closest('button[data-act="dels"]'); if(!b) return;
+    examState.students=examState.students.filter(x=>x.id!==b.dataset.s);
+    saveExam(); renderExamStudents();
+  });
+  $('#btnPasteExam').onclick=pasteExamBatch;
+  $('#btnStartExam').onclick=runExam;
+  $('#btnExamCsv').onclick=exportExamCsv;
+  $('#btnExamMd').onclick=exportExamMd;
+}
+
+/* ================= 学情分析 ================= */
+function renderAnalysis(){
+  const recs=state.records;
+  const empty=$('#analysisEmpty'), body=$('#analysisBody');
+  if(!recs.length){empty.style.display='';body.style.display='none';return;}
+  empty.style.display='none';body.style.display='';
+  const n=recs.length;
+  const scores=recs.map(r=>r.score), fulls=recs.map(r=>r.fullScore||1);
+  const avg=scores.reduce((a,b)=>a+b,0)/n;
+  const max=Math.max(...scores), min=Math.min(...scores);
+  const rates=recs.map(r=>r.rate);
+  const pass=rates.filter(r=>r>=60).length, good=rates.filter(r=>r>=85).length;
+  $('#statRow').innerHTML=`
+    <div class="stat"><div class="v">${n}</div><div class="k">阅卷份数</div></div>
+    <div class="stat"><div class="v" style="color:var(--accent2)">${avg.toFixed(1)}</div><div class="k">平均分</div></div>
+    <div class="stat"><div class="v" style="color:var(--green)">${max.toFixed(1)}</div><div class="k">最高分</div></div>
+    <div class="stat"><div class="v" style="color:var(--red)">${min.toFixed(1)}</div><div class="k">最低分</div></div>
+    <div class="stat"><div class="v" style="color:var(--green)">${(pass/n*100).toFixed(0)}%</div><div class="k">及格率(≥60%)</div></div>
+    <div class="stat"><div class="v" style="color:var(--purple)">${(good/n*100).toFixed(0)}%</div><div class="k">优秀率(≥85%)</div></div>`;
+  // 分数分布（按满分归一化到 0-100）
+  const buckets=['0-20','20-40','40-60','60-80','80-100'];
+  const counts=[0,0,0,0,0];
+  recs.forEach(r=>{const p=r.rate;const i=Math.min(4,Math.max(0,Math.floor(p/20)));counts[i]++;});
+  const mx=Math.max(...counts,1);
+  $('#distChart').innerHTML=buckets.map((b,i)=>`
+    <div class="bar-wrap">
+      <div class="bc">${counts[i]}</div>
+      <div class="bar" style="height:${(counts[i]/mx*100)}%"></div>
+      <div class="bl">${b}</div>
+    </div>`).join('');
+  $('#analysisTable').innerHTML=recs.map(r=>`
+    <tr><td>${esc(r.student)}</td><td>${esc(r.subject)}</td><td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.question)}">${esc(r.question)}</td>
+    <td><span class="score-badge ${scoreClass(r.rate/100)}">${r.score}</span></td><td>${r.rate}%</td><td style="font-size:12px;color:var(--muted)">${esc(r.time)}</td></tr>`).join('');
+  // 失分点聚合
+  const allDed=[], allSug=[];
+  recs.forEach(r=>{if(r.deduction)allDed.push(r.deduction);if(r.suggestion)allSug.push(r.suggestion);});
+  const uniq=(a)=>[...new Set(a)];
+  $('#analysisInsights').innerHTML=`
+    ${allDed.length?`<label>常见扣分原因</label><ul style="padding-left:20px">${uniq(allDed).slice(0,8).map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:'<div class="hint">暂无扣分记录</div>'}
+    ${allSug.length?`<label style="margin-top:12px">改进建议</label><ul style="padding-left:20px">${uniq(allSug).slice(0,8).map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:''}`;
+}
+
+/* ================= 导出 ================= */
+function exportCsv(){
+  const recs=state.gradeResults.length?state.gradeResults:state.records;
+  if(!recs.length){toast('暂无记录可导出','err');return;}
+  const head=['学生','科目','题目','得分','满分','得分率%','扣分原因','评语','建议','时间'];
+  const esc2=s=>'"'+String(s??'').replace(/"/g,'""')+'"';
+  const rows=recs.map(r=>[r.student,r.subject,r.question,r.score,r.fullScore,r.rate,r.deduction,r.comment,r.suggestion,r.time].map(esc2).join(','));
+  const csv='\ufeff'+head.map(esc2).join(',')+'\n'+rows.join('\n');
+  download('YJAI阅卷记录.csv',csv,'text/csv');
+}
+function exportMd(){
+  const recs=state.gradeResults.length?state.gradeResults:state.records;
+  if(!recs.length){toast('暂无记录可导出','err');return;}
+  let md='# YJAI 学情分析报告\n\n';
+  const n=recs.length,avg=recs.reduce((a,b)=>a+b.score,0)/n;
+  md+=`- 阅卷份数：${n}\n- 平均分：${avg.toFixed(1)}\n- 最高分：${Math.max(...recs.map(r=>r.score))}\n- 最低分：${Math.min(...recs.map(r=>r.score))}\n\n`;
+  md+='## 成绩明细\n\n| 学生 | 科目 | 得分 | 得分率 | 评语 |\n|---|---|---|---|---|\n';
+  recs.forEach(r=>md+=`| ${r.student} | ${r.subject} | ${r.score}/${r.fullScore} | ${r.rate}% | ${r.comment||''} |\n`);
+  md+='\n## 失分点汇总\n\n';
+  recs.filter(r=>r.deduction).forEach(r=>md+=`- **${r.student}**：${r.deduction}\n`);
+  download('YJAI学情分析.md',md,'text/markdown');
+}
+function download(name,content,type){
+  const blob=new Blob([content],{type:type+';charset=utf-8'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/* ================= AI 优化评分标准 ================= */
+async function runOptimize(){
+  const raw=$('#optimizeInput').value.trim();
+  if(!raw){toast('请先粘贴原始评分标准','err');return;}
+  if(!state.settings.apiKey){toast('请先配置 API','err');switchView('settings');return;}
+  $('#btnOptimize').disabled=true;$('#btnOptimize').textContent='⏳ 优化中…';
+  try{
+    const sys='你是教学教研专家，擅长编写规范的评分标准。只输出一个 JSON 对象。';
+    const user='请将下面的原始内容重写为规范评分标准，输出 JSON 对象，字段：{"question":"题目","fullScore":数字,"reference":"参考答案","points":"得分点（分点、可标注分值）","wrong":"不得分答案","note":"评卷备注"}。\n\n原始内容：\n'+raw;
+    const out=await callAI([{role:'system',content:sys},{role:'user',content:user}],{json:true});
+    const j=parseAIJson(out);
+    $('#optimizeOutput').innerHTML=`
+      <div class="hint" style="margin-bottom:8px">✅ 优化完成，可直接「应用到阅卷」：</div>
+      <label>题目</label><textarea>${esc(j.question||'')}</textarea>
+      <label>满分</label><input type="number" value="${esc(j.fullScore||'')}" id="optFull" />
+      <label>参考答案</label><textarea>${esc(j.reference||'')}</textarea>
+      <label>得分点</label><textarea>${esc(j.points||'')}</textarea>
+      <label>不得分答案</label><textarea>${esc(j.wrong||'')}</textarea>
+      <label>备注</label><textarea>${esc(j.note||'')}</textarea>
+      <div class="row end" style="margin-top:12px"><button class="btn btn-primary" id="btnOptApply">应用到阅卷</button></div>`;
+    $('#btnOptApply').onclick=()=>{
+      const t=$$('#optimizeOutput textarea');
+      $('#gradeQuestion').value=t[0].value;$('#gradeFullScore').value=$('#optFull').value||'';
+      $('#gradeReference').value=t[1].value;$('#gradePoints').value=t[2].value;
+      $('#gradeWrong').value=t[3].value;$('#gradeNote').value=t[4].value;
+      toast('已应用到阅卷','ok');switchView('grade');
+    };
+  }catch(e){toast('优化失败：'+e.message,'err');}
+  $('#btnOptimize').disabled=false;$('#btnOptimize').textContent='✨ AI 优化';
+}
+
+/* ================= 事件绑定 ================= */
+function bindEvents(){
+  $$('.nav button').forEach(b=>b.onclick=()=>switchView(b.dataset.view));
+  $('#themeToggle').onclick = toggleTheme;
+  $('#btnActivate').onclick = activateLicense;
+  $('#btnPay').onclick = ()=> $('#payModal').classList.add('show');
+  $('#btnPayClose').onclick = ()=> $('#payModal').classList.remove('show');
+  $('#payModal').addEventListener('click',e=>{ if(e.target===e.target.closest('.modal-mask')) $('#payModal').classList.remove('show'); });
+  $('#btnCopyMachine').onclick = ()=>{
+    const v = $('#machineCode').value;
+    if(v && !v.startsWith('（')){ navigator.clipboard.writeText(v).then(()=>toast('机器码已复制','ok')).catch(()=>toast('复制失败','err')); }
+    else toast('机器码为空','err');
+  };
+  $('#btnGoSettings').onclick=()=>switchView('settings');
+  $('#btnAddStudent').onclick=()=>addStudent();
+  $('#btnPasteBatch').onclick=batchPaste;
+  $('#btnStartGrade').onclick=runGrading;
+  $('#btnExportCsv').onclick=exportCsv;
+  $('#btnExportMd').onclick=exportMd;
+  $('#btnNewTpl').onclick=()=>openTplModal(null);
+  $('#btnTplCancel').onclick=()=>$('#tplModal').classList.remove('show');
+  $('#btnTplSave').onclick=saveTplModal;
+  $('#btnOptimize').onclick=runOptimize;
+  $('#btnSaveSettings').onclick=()=>{
+    state.settings={baseUrl:$('#setBaseUrl').value.trim(),apiKey:$('#setApiKey').value.trim(),model:$('#setModel').value.trim()};
+    save('settings',state.settings);refreshApiStatus();toast('配置已保存','ok');
+  };
+  $('#btnTestApi').onclick=async()=>{
+    state.settings={baseUrl:$('#setBaseUrl').value.trim(),apiKey:$('#setApiKey').value.trim(),model:$('#setModel').value.trim()};
+    const tr=$('#testResult');tr.textContent='测试中…';tr.style.color='var(--muted)';
+    try{await callAI([{role:'user',content:'请只回复：连接成功'}],{json:false});tr.textContent='✅ 连接成功，模型可用';tr.style.color='var(--green)';}
+    catch(e){tr.textContent='❌ '+e.message;tr.style.color='var(--red)';}
+  };
+  $$('.preset button').forEach(b=>b.onclick=()=>{
+    const p=PRESETS[b.dataset.preset];$('#setBaseUrl').value=p.base;$('#setModel').value=p.model;toast('已填入 '+b.textContent+' 配置，请补充 API Key','ok');
+  });
+  $('#btnClearRecords').onclick=()=>{
+    if(confirm('确定清空所有阅卷记录吗？此操作不可恢复。')){state.records=[];save('records',[]);renderAnalysis();toast('已清空','ok');}
+  };
+  $('#btnCheckUpdate').onclick=async()=>{ $('#updateStatus').textContent='正在检查更新…'; $('#updateStatus').style.color='var(--muted)'; if(window.YJAI&&YJAI.checkUpdate){ const r=await YJAI.checkUpdate(); if(r&&r.error) updateStatusText('❌ '+r.error); } };
+  $('#btnDownloadUpdate').onclick=async()=>{ $('#updateStatus').textContent='开始下载更新…'; $('#updateStatus').style.color='var(--muted)'; if(window.YJAI&&YJAI.downloadUpdate){ const r=await YJAI.downloadUpdate(); if(r&&r.error) updateStatusText('❌ '+r.error); } };
+  $('#btnInstallUpdate').onclick=async()=>{ if(window.YJAI&&YJAI.installUpdate) YJAI.installUpdate(); };
+  $('#tplList').addEventListener('click',e=>{
+    const b=e.target.closest('button[data-tpl]');if(!b)return;
+    const act=b.dataset.act,id=b.dataset.tpl;
+    if(act==='load'){applyTemplate(id);switchView('grade');}
+    else if(act==='edit'){openTplModal(id);}
+    else if(act==='del'){if(confirm('删除该模板？')){state.templates=state.templates.filter(x=>x.id!==id);save('templates',state.templates);renderTemplates();}}
+  });
+  $('#gradeTemplate').addEventListener('change',e=>{if(e.target.value)applyTemplate(e.target.value);});
+  $('#tplModal').addEventListener('click',e=>{if(e.target===e.target.closest('.modal-mask'))$('#tplModal').classList.remove('show');});
+}
+
+/* ================= 自动更新 ================= */
+function updateStatusText(msg){
+  const el=$('#updateStatus'); if(!el) return;
+  el.textContent=msg;
+}
+function initUpdater(){
+  if(!window.YJAI) return;
+  if(YJAI.getVersion){ YJAI.getVersion().then(v=>{ if(v&&v.version) $('#appVersion').textContent='v'+v.version; }); }
+  if(YJAI.onUpdateStatus){
+    YJAI.onUpdateStatus((p)=>{
+      const el=$('#updateStatus'); if(!el) return;
+      if(p.state==='checking'){ el.textContent='正在检查更新…'; el.style.color='var(--muted)'; }
+      else if(p.state==='none'){ el.textContent='✅ 已是最新版本'; el.style.color='var(--green)'; }
+      else if(p.state==='available'){
+        el.textContent='🎉 发现新版本 v'+(p.info&&p.info.version||'')+'，点击「下载更新」';
+        el.style.color='var(--amber)';
+        $('#btnDownloadUpdate').style.display='';
+        $('#btnInstallUpdate').style.display='none';
+      }
+      else if(p.state==='downloading'){
+        const pc=(p.percent||0).toFixed(1);
+        el.textContent='⏬ 正在下载更新 '+pc+'%';
+        el.style.color='var(--muted)';
+      }
+      else if(p.state==='downloaded'){
+        el.textContent='✅ 更新已下载完成，点击「立即重启安装」';
+        el.style.color='var(--green)';
+        $('#btnDownloadUpdate').style.display='none';
+        $('#btnInstallUpdate').style.display='';
+      }
+      else if(p.state==='error'){ el.textContent='❌ 更新出错：'+(p.message||''); el.style.color='var(--red)'; }
+    });
+  }
+}
+
+/* ================= 启动 ================= */
+async function init(){
+  applyTheme(loadTheme());
+  loadState();
+  updateTokenDisplay();
+  if(!state.templates.length) state.templates=[defaultTplObject()];
+  fillSubjectSelects();
+  await initLicense();
+  initBrowser();
+  initExam();
+  $('#examTitle').value = examState.title;
+  $('#examSubject').value = examState.subject;
+  renderExamQuestions();
+  renderExamStudents();
+  loadSettingsUI();
+  renderStudents();
+  renderTemplates();
+  bindStudents();
+  bindEvents();
+  bindExamEvents();
+  initUpdater();
+  // 默认给一个空学生
+  addStudent();
+}
+init();
+</script>
+</body>
+</html>

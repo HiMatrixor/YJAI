@@ -1,0 +1,63 @@
+{
+  "name": "yjai",
+  "version": "1.0.1",
+  "description": "YJAI - AI 阅卷助手（本地桌面版）",
+  "main": "main.js",
+  "author": "YJAI",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win",
+    "dist:publish": "electron-builder --win --publish always"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
+  "build": {
+    "appId": "com.yjai.reader",
+    "productName": "YJAI",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "browser.html",
+      "icon.ico",
+      "pay-wechat.png",
+      "pay-alipay.jpg"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "icon.ico",
+      "artifactName": "YJAI-Setup-${version}.${ext}",
+      "signAndEditExecutable": false,
+      "verifyUpdateCodeSignature": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "YJAI 阅卷助手"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "HiMatrixor",
+        "repo": "YJAI"
+      }
+    ]
+  }
+}

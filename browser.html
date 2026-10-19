@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; connect-src https: http: data: blob:; font-src 'self' data:;" />
+<title>YJAI 浏览器</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;overflow:hidden}
+  body{font-family:"Segoe UI","Microsoft YaHei",sans-serif;background:#12161d;color:#e6edf3;display:flex;flex-direction:column;font-size:13px}
+  .toolbar{display:flex;gap:7px;align-items:center;padding:8px 10px;background:#171c24;border-bottom:1px solid #262e3a;flex-wrap:wrap}
+  .toolbar .logo{font-weight:700;color:#4f8cff;margin-right:4px;white-space:nowrap}
+  .toolbar input[type=text]{flex:1;min-width:140px;padding:7px 10px;background:#0e1116;border:1px solid #313b4a;border-radius:7px;color:#e6edf3;font-size:13px;outline:none}
+  .toolbar input[type=text]:focus{border-color:#4f8cff}
+  .tb{padding:7px 11px;font-size:13px;background:#1c232e;color:#e6edf3;border:1px solid #313b4a;border-radius:7px;cursor:pointer;font-family:inherit;white-space:nowrap}
+  .tb:hover{border-color:#4f8cff}
+  .tb.go{background:#4f8cff;color:#fff;border-color:#4f8cff}
+  .tb.hint{background:transparent;border-color:transparent;color:#8b98a9;cursor:default}
+  .stage{flex:1;position:relative;background:#fff;min-height:0}
+  .stage webview{position:absolute;inset:0;width:100%;height:100%}
+  .stage .empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#8b98a9;background:#12161d;text-align:center;padding:20px}
+  .overlay{position:absolute;inset:0;pointer-events:none;z-index:6}
+  .overlay.active{pointer-events:auto;cursor:crosshair;background:rgba(79,140,255,0.07)}
+  .overlay .box{position:absolute;border:2px dashed #4f8cff;background:rgba(79,140,255,0.18);display:none;pointer-events:none}
+  .overlay .hint{position:absolute;top:12px;left:50%;transform:translateX(-50%);background:#1c232e;border:1px solid #4f8cff;border-radius:8px;padding:7px 16px;font-size:12px;color:#e6edf3;z-index:7;white-space:nowrap;box-shadow:0 6px 24px rgba(0,0,0,.4)}
+  .overlay .hint .esc{color:#8b98a9;font-size:11px}
+</style>
+</head>
+<body>
+  <div class="toolbar">
+    <span class="logo">YJAI</span>
+    <button class="tb" id="bk" title="后退">←</button>
+    <button class="tb" id="fw" title="前进">→</button>
+    <button class="tb" id="rf" title="刷新">⟳</button>
+    <input type="text" id="url" placeholder="输入阅卷平台网址，如 dongni100.com" />
+    <button class="tb go" id="go">打开</button>
+    <button class="tb" id="zoomOut" title="缩小">−</button>
+    <span class="tb hint" id="zoomLabel" style="min-width:46px;text-align:center;padding:7px 4px">100%</span>
+    <button class="tb" id="zoomIn" title="放大">＋</button>
+    <button class="tb" id="zoomReset" title="重置缩放">重置</button>
+    <span class="tb hint" id="hintText">Esc 取消框选</span>
+  </div>
+  <div class="stage" id="stage">
+    <div class="empty" id="empty">输入网址并点击「打开」，即可在此独立窗口浏览阅卷平台</div>
+    <webview id="wv" src="about:blank" style="visibility:hidden"></webview>
+    <div class="overlay" id="overlay">
+      <div class="hint" id="hint" style="display:none"></div>
+      <div class="box" id="box"></div>
+    </div>
+  </div>
+
+<script>
+const $ = s => document.querySelector(s);
+const wv = () => $('#wv');
+const UA = {
+  edge: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0',
+  chrome: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+};
+let engine = 'edge';
+let action = null;   // null | 'area' | 'input' | 'submit' | 'meta'
+let pendingId = null;
+let drag = null;
+
+function navigate(url){
+  if(!url) return;
+  if(!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) url = 'https://' + url;
+  const w = wv();
+  w.setUserAgent(UA[engine]);
+  w.loadURL(url).catch(e=>{});
+  $('#empty').style.display = 'none';
+  w.style.visibility = 'visible';
+}
+
+wv().addEventListener('dom-ready', ()=>{
+  $('#empty').style.display = 'none';
+  wv().style.visibility = 'visible';
+});
+wv().addEventListener('did-navigate', e=>{ $('#url').value = e.url; });
+wv().addEventListener('did-navigate-in-page', e=>{ $('#url').value = e.url; });
+
+$('#go').onclick = ()=> navigate($('#url').value.trim());
+$('#url').addEventListener('keydown', e=>{ if(e.key==='Enter') navigate($('#url').value.trim()); });
+$('#bk').onclick = ()=>{ const w=wv(); if(w.canGoBack()) w.goBack(); };
+$('#fw').onclick = ()=>{ const w=wv(); if(w.canGoForward()) w.goForward(); };
+$('#rf').onclick = ()=>{ wv().reload(); };
+
+/* —— 页面缩放 —— */
+let zoom = 1;
+function applyZoom(silent){
+  zoom = Math.max(0.25, Math.min(3, Math.round(zoom*10)/10));
+  wv().setZoomFactor(zoom);
+  $('#zoomLabel').textContent = Math.round(zoom*100)+'%';
+  if(!silent) toast('缩放 '+Math.round(zoom*100)+'%，若已框选请重新框选答题区域');
+}
+$('#zoomIn').onclick = ()=>{ zoom += 0.1; applyZoom(); };
+$('#zoomOut').onclick = ()=>{ zoom -= 0.1; applyZoom(); };
+$('#zoomReset').onclick = ()=>{ zoom = 1; applyZoom(true); };
+
+/* —— 框选 / 拾取 —— */
+function startSelect(){
+  action = 'area';
+  const o = $('#overlay');
+  o.classList.add('active'); o.style.cursor = 'crosshair';
+  $('#hint').innerHTML = '按住鼠标左键拖动，框选答题区域 <span class="esc">(Esc 取消)</span>';
+  $('#hint').style.display = '';
+  $('#box').style.display = 'none';
+}
+function startPick(target){
+  action = target;
+  const o = $('#overlay');
+  o.classList.add('active'); o.style.cursor = 'pointer';
+  const label = { input:'分数输入框', submit:'提交按钮', meta:'元数据元素' }[target];
+  $('#hint').innerHTML = '请在页面中点击「'+label+'」<span class="esc">(Esc 取消)</span>';
+  $('#hint').style.display = '';
+}
+function resetOverlay(){
+  action = null; drag = null;
+  const o = $('#overlay');
+  o.classList.remove('active'); o.style.cursor = '';
+  $('#hint').style.display = 'none';
+  $('#box').style.display = 'none';
+}
+function finish(result){
+  if(pendingId){ window.YJAI.sendBrowserResult(pendingId, result); pendingId = null; }
+  resetOverlay();
+}
+
+const overlay = $('#overlay'), box = $('#box');
+overlay.addEventListener('mousedown', e=>{
+  if(!overlay.classList.contains('active')) return;
+  const r = overlay.getBoundingClientRect();
+  drag = { sx:e.clientX-r.left, sy:e.clientY-r.top };
+  if(action==='area'){
+    box.style.display='block';
+    box.style.left=drag.sx+'px'; box.style.top=drag.sy+'px';
+    box.style.width='0px'; box.style.height='0px';
+  }
+  e.preventDefault();
+});
+overlay.addEventListener('mousemove', e=>{
+  if(!drag || action!=='area') return;
+  const r = overlay.getBoundingClientRect();
+  const cx=e.clientX-r.left, cy=e.clientY-r.top;
+  box.style.left = Math.min(drag.sx,cx)+'px'; box.style.top = Math.min(drag.sy,cy)+'px';
+  box.style.width = Math.abs(cx-drag.sx)+'px'; box.style.height = Math.abs(cy-drag.sy)+'px';
+});
+overlay.addEventListener('mouseup', async e=>{
+  if(!drag) return;
+  const r = overlay.getBoundingClientRect();
+  const cx=e.clientX-r.left, cy=e.clientY-r.top;
+  const dx=Math.abs(cx-drag.sx), dy=Math.abs(cy-drag.sy);
+  if(action==='area'){
+    const x=Math.min(drag.sx,cx), y=Math.min(drag.sy,cy);
+    if(dx<5||dy<5){ toast('框选区域太小'); resetOverlay(); return; }
+    const area = { x:Math.round(x), y:Math.round(y), w:Math.round(dx), h:Math.round(dy) };
+    finish({ type:'area', area });
+  } else if(action==='input'||action==='submit'||action==='meta'){
+    if(dx>6||dy>6){ toast('请单击元素而非拖动'); resetOverlay(); return; }
+    try{
+      const info = await pickAt(Math.round(cx), Math.round(cy));
+      if(!info || !info.selector){ toast('未识别到元素'); finish({ type:'pick', error:'未识别到元素' }); }
+      else finish({ type:'pick', target:action, selector:info.selector, tag:info.tag, elementType:info.type });
+    }catch(err){ finish({ type:'pick', error:err.message }); }
+  }
+  drag = null;
+});
+document.addEventListener('keydown', e=>{
+  if(e.key==='Escape' && overlay.classList.contains('active')){
+    finish({ cancel:true });
+  }
+});
+
+async function pickAt(x,y){
+  const code = `(function(){
+    var x=${x}, y=${y};
+    var el = document.elementFromPoint(x, y);
+    if(!el) return null;
+    var TARGETS = ['INPUT','TEXTAREA','SELECT','BUTTON','A'];
+    var cur = el;
+    while(cur && TARGETS.indexOf(cur.tagName) === -1) cur = cur.parentElement;
+    if(!cur) cur = el;
+    if(cur.tagName === 'LABEL'){
+      var inner = cur.querySelector('input, textarea, select');
+      if(inner) cur = inner;
+      else if(cur.htmlFor){ var byId = document.getElementById(cur.htmlFor); if(byId) cur = byId; }
+    }
+    function build(n){
+      if(n.id) return '#' + CSS.escape(n.id);
+      var sel = n.tagName.toLowerCase();
+      if(n.className && typeof n.className === 'string'){
+        var cls = n.className.trim().split(/\\s+/).filter(Boolean).slice(0,2);
+        if(cls.length) sel += '.' + cls.map(function(c){return CSS.escape(c);}).join('.');
+      }
+      return sel;
+    }
+    return { selector: build(cur), tag: cur.tagName, id: cur.id||'', type: cur.type||'' };
+  })()`;
+  return await wv().executeJavaScript(code);
+}
+
+function toast(msg){
+  let t = document.getElementById('btoast');
+  if(!t){ t = document.createElement('div'); t.id='btoast'; t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1c232e;border:1px solid #313b4a;border-radius:8px;padding:9px 18px;font-size:13px;z-index:99;transition:.2s;opacity:0'; document.body.appendChild(t); }
+  t.textContent = msg; t.style.opacity = '1';
+  clearTimeout(t._t); t._t = setTimeout(()=>t.style.opacity='0', 2200);
+}
+
+/* —— 接收主窗口的动作 —— */
+window.YJAI.onBrowserAction(async (msg)=>{
+  const { id, action:act, data } = msg;
+  switch(act){
+    case 'navigate':
+      navigate(data);
+      finishId(id, { ok:true });
+      break;
+    case 'set-ua':
+      engine = data || 'edge';
+      wv().setUserAgent(UA[engine]);
+      if(wv().getURL() && wv().getURL()!=='about:blank') wv().reload();
+      finishId(id, { ok:true });
+      break;
+    case 'get-url':
+      finishId(id, { url: wv().getURL() || '' });
+      break;
+    case 'execute': {
+      try{
+        const r = await wv().executeJavaScript(data);
+        finishId(id, { result: r });
+      }catch(e){ finishId(id, { error:'执行失败: '+e.message }); }
+      break;
+    }
+    case 'start-select':
+      pendingId = id;
+      startSelect();
+      break;
+    case 'start-pick':
+      pendingId = id;
+      startPick(data);
+      break;
+    case 'capture': {
+      try{
+        const a = data; // {x,y,w,h}
+        const img = await wv().capturePage({ x:a.x, y:a.y, width:a.w, height:a.h });
+        finishId(id, { dataUrl: img.toDataURL() });
+      }catch(e){ finishId(id, { error:'截图失败: '+e.message }); }
+      break;
+    }
+    case 'fill-score': {
+      const { selector, score } = data;
+      const code = `(function(){
+        var el = document.querySelector(${JSON.stringify(selector)});
+        if(!el) return 'NOT_FOUND';
+        if(el.tagName!=='INPUT' && el.tagName!=='TEXTAREA'){
+          var inner = el.querySelector('input, textarea');
+          if(inner) el = inner;
+          else return 'NOT_INPUT';
+        }
+        el.focus();
+        var proto = (el.tagName==='TEXTAREA') ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+        var v = ${JSON.stringify(String(score))};
+        if(setter) setter.call(el, v); else el.value = v;
+        try{ el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:v})); }
+        catch(e){ el.dispatchEvent(new Event('input', {bubbles:true})); }
+        el.dispatchEvent(new Event('change', {bubbles:true}));
+        return 'OK';
+      })()`;
+      const r = await wv().executeJavaScript(code);
+      finishId(id, { ok: r==='OK', result: r });
+      break;
+    }
+    case 'click-submit': {
+      const code = `(function(){
+        var el = document.querySelector(${JSON.stringify(data||'')});
+        if(!el) return 'NOT_FOUND';
+        if(document.activeElement && document.activeElement.blur) document.activeElement.blur();
+        var rect = el.getBoundingClientRect();
+        var x = rect.left + rect.width/2, y = rect.top + rect.height/2;
+        var opts = {bubbles:true, cancelable:true, view:window, clientX:x, clientY:y, button:0};
+        el.dispatchEvent(new MouseEvent('mousedown', opts));
+        el.dispatchEvent(new MouseEvent('mouseup', opts));
+        el.dispatchEvent(new MouseEvent('click', opts));
+        return 'OK';
+      })()`;
+      const r = await wv().executeJavaScript(code);
+      finishId(id, { ok: r==='OK', result: r });
+      break;
+    }
+    default:
+      finishId(id, { error:'未知动作 '+act });
+  }
+});
+
+window.YJAI.onNavigate((url)=>{
+  navigate(url);
+});
+
+function finishId(id, result){
+  if(id) window.YJAI.sendBrowserResult(id, result);
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+node_modules/
+dist/
+release/
+build/
+build*/
+*.rar
+*.zip
+*.mp4
+*.log
+package-lock.json
+
+# 旧的 electron-packager 打包产物目录（含嵌套 .git 和完整运行时）
+YJAI-win32-x64/
+YJAI阅卷AI-win32-x64/
+*.exe
+*.dll
+*.pak
+*.dat
+*.bin
+
+# 开发者激活码生成器（含激活密钥，勿入库）
+gen_license.html
