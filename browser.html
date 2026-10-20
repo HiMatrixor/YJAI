@@ -391,7 +391,7 @@ window.YJAI.onBrowserAction(async (msg)=>{
           const wid = wv().getWebContentsId();
           const cr = await window.YJAI.cdpClick({ webContentsId: wid, x, y, times: n });
           if(cr && cr.error){ finishId(id, { ok:false, result:r, error:'CDP 回退失败: '+cr.error }); break; }
-          finishId(id, { ok:true, result:{ clicked:n, hit:(r&&r.hit)||'IFRAME', mode:'cdp' } });
+          finishId(id, { ok:true, result:{ clicked:(cr&&cr.clicked)||n, hit:(r&&r.hit)||'IFRAME', mode:'cdp', target:(cr&&cr.target)||'', local:(cr&&cr.local)||null } });
           break;
         }
         finishId(id, { ok: !!(r && r.clicked), result: r });
@@ -446,7 +446,7 @@ window.YJAI.onBrowserAction(async (msg)=>{
           const wid = wv().getWebContentsId();
           const cr = await window.YJAI.cdpClick({ webContentsId: wid, x, y, times: 1 });
           if(cr && cr.error){ finishId(id, { ok:false, result:r, error:'CDP 回退失败: '+cr.error }); break; }
-          finishId(id, { ok:true, result:{ hit:hitStr||'IFRAME', mode:'cdp' } });
+          finishId(id, { ok:true, result:{ hit:hitStr||'IFRAME', mode:'cdp', target:(cr&&cr.target)||'', local:(cr&&cr.local)||null } });
           break;
         }
         finishId(id, { ok:true, result:r });

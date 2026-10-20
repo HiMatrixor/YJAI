@@ -1483,9 +1483,9 @@ async function fillScoreCoordInPage(score){
   const times = Math.round(Number(score) / step);
   if(times <= 0){ toast('分数为 0，无需填分','err'); return false; }
   const r = await brRelay('fill-score-coord', { x:c.x, y:c.y, score:Number(score), times:times });
-  if(r && r.error){ toast(r.error,'err'); return false; }
-  if(r && !r.ok){ toast('坐标填分未成功，请确认给分点坐标正确','err'); return false; }
-  if(r && r.result) brLog('连点 '+(r.result.clicked||times)+' 次，命中元素: '+r.result.hit+(r.result.mode==='cdp'?'（CDP 穿透 iframe）':''), 'i');
+  if(r && r.error){ toast(r.error,'err'); brLog('坐标填分失败: '+r.error, 'e'); return false; }
+  if(r && !r.ok){ toast('坐标填分未成功，请确认给分点坐标正确','err'); brLog('坐标填分未成功，命中: '+JSON.stringify(r.result||{}), 'e'); return false; }
+  if(r && r.result) brLog('连点 '+(r.result.clicked||times)+' 次，命中元素: '+r.result.hit+(r.result.mode==='cdp'?'（CDP 穿透 iframe）':'')+(r.result.target?(' → '+r.result.target):''), 'i');
   return !!(r && r.ok);
 }
 async function clickSubmitInPage(){
@@ -1501,8 +1501,8 @@ async function clickSubmitCoordInPage(){
   const c = brState.coords.submit;
   if(!c){ toast('请先拾取提交按钮坐标','err'); return false; }
   const r = await brRelay('click-coord', { x:c.x, y:c.y });
-  if(r && r.error){ toast(r.error,'err'); return false; }
-  if(r && r.result) brLog('提交点击命中元素: '+(r.result.hit||r.result)+(r.result.mode==='cdp'?'（CDP 穿透 iframe）':''), 'i');
+  if(r && r.error){ toast(r.error,'err'); brLog('提交点击失败: '+r.error, 'e'); return false; }
+  if(r && r.result) brLog('提交点击命中元素: '+(r.result.hit||r.result)+(r.result.mode==='cdp'?'（CDP 穿透 iframe）':'')+(r.result.target?(' → '+r.result.target):''), 'i');
   return !!(r && r.ok);
 }
 async function testSubmit(){

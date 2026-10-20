@@ -160,9 +160,13 @@ ipcMain.handle('browser:relay', (e, msg) => {
   });
 });
 
-/* ============ CDP 真实输入点击（通过 DevTools Protocol，自动生成 pointer+mouse+click） ============ */
-// 用于 e卷通等 Canvas 平台：webview.sendInputEvent 的 mouseDown 不生成 Pointer Events，
-// 而 Canvas 给分点通常监听 pointerdown/pointerup。CDP Input.dispatchMouseEvent 走完整输入管线，最可靠。
+/* ============ CDP 真实输入点击（iframe 感知版） ============ */
+// e卷通等平台的给分点/提交按钮在【跨域 iframe】（OOPIF，独立渲染进程）内：
+// - 顶层派发合成事件 → 落在 iframe 外壳上，无效
+// - attach 顶层 webContents 派发 CDP 事件 → 在 site isolation 下到不了 OOPIF 内部
+// 正确做法：attach 顶层拿到 iframe 的 rect 与 src → 换算出 iframe 内局部坐标 →
+// Target.getTargets 找到 iframe 对应 target → Target.attachToTarget 拿 sessionId →
+// 在该 target 的 Input domain 用局部坐标派发 mouseMoved/Pressed/Released（自动生成 pointer+mouse+click）。
 function sleepMs(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 ipcMain.handle('browser:cdp-click', async (e, payload) => {
@@ -173,23 +177,78 @@ ipcMain.handle('browser:cdp-click', async (e, payload) => {
   const n = Math.max(1, Math.round(Number(times) || 1));
   let attached = false;
   try {
-    if (!wc.debugger.isAttached()) {
-      wc.debugger.attach('1.3');
-      attached = true;
+    if (!wc.debugger.isAttached()) { wc.debugger.attach('1.3'); attached = true; }
+
+    // 1) 顶层文档探针：解析命中坐标处是否为跨域 iframe，并换算 iframe 内局部坐标
+    const probe = await wc.debugger.sendCommand('Runtime.evaluate', {
+      returnByValue: true,
+      expression: `(function(){
+        function res(doc, cx, cy, depth){
+          var el = doc.elementFromPoint(cx, cy);
+          if(!el) return {hit:'NONE'};
+          if((el.tagName==='IFRAME'||el.tagName==='FRAME') && depth<8){
+            var r = el.getBoundingClientRect();
+            try{
+              if(el.contentDocument){
+                var inner = res(el.contentDocument, cx-r.left, cy-r.top, depth+1);
+                if(inner && inner.hit!=='NONE') return inner;
+              }
+            }catch(err){
+              return {cross:true, ix:Math.round(cx-r.left), iy:Math.round(cy-r.top), src:el.src||'', id:(el.id||'')};
+            }
+          }
+          var rect = el.getBoundingClientRect();
+          return {hit: el.tagName + (el.id?('#'+el.id):''), x: Math.round(x), y: Math.round(y)};
+        }
+        return res(document, ${x}, ${y}, 0);
+      })()`
+    });
+    const info = (probe && probe.result && probe.result.value) || {};
+    let tx = x, ty = y, sessionId = undefined, targetDesc = 'top';
+
+    if (info.cross) {
+      // 2) 跨域 iframe：找到 iframe 对应的独立 target（OOPIF）
+      const { targetInfos } = await wc.debugger.sendCommand('Target.getTargets');
+      const srcBase = String(info.src || '').split('#')[0];
+      const srcPath = srcBase.split('?')[0];
+      const cands = (targetInfos || []).filter(t => t.type === 'iframe' && t.attached !== true);
+      let best = null;
+      for (const t of cands) {
+        const u = String(t.url || '');
+        if (srcBase && (u === srcBase || u.startsWith(srcBase))) { best = t; break; }
+        if (srcPath && u.split('?')[0] === srcPath) { best = t; break; }
+      }
+      if (!best && cands.length) {
+        // 宽松匹配：url 与 src 同源（协议+主机一致）
+        try {
+          const so = new URL(srcBase).origin;
+          best = cands.find(t => { try { return new URL(t.url).origin === so; } catch (_) { return false; } });
+        } catch (_) {}
+      }
+      if (!best) return { error: '未找到 iframe 对应的渲染目标（src=' + srcBase + '），无法穿透点击' };
+      const at = await wc.debugger.sendCommand('Target.attachToTarget', { targetId: best.targetId, flatten: true });
+      sessionId = at.sessionId;
+      tx = info.ix; ty = info.iy;
+      targetDesc = 'iframe:' + (best.url || '').slice(0, 80);
     }
+
+    // 3) 在目标（顶层或 iframe target）派发完整点击序列
     for (let i = 0; i < n; i++) {
-      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: tx, y: ty }, sessionId);
       await sleepMs(25);
-      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: tx, y: ty, button: 'left', clickCount: 1, buttons: 1 }, sessionId);
       await sleepMs(45);
-      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: tx, y: ty, button: 'left', clickCount: 1, buttons: 0 }, sessionId);
       await sleepMs(135);
     }
-    return { ok: true, clicked: n };
+    if (sessionId) {
+      try { await wc.debugger.sendCommand('Target.detachFromTarget', { sessionId }); } catch (_) {}
+    }
+    return { ok: true, clicked: n, target: targetDesc, local: info.cross ? { x: tx, y: ty } : null };
   } catch (err) {
     return { error: String(err && err.message || err) };
   } finally {
-    if (attached) { try { wc.debugger.detach(); } catch (e) { /* ignore */ } }
+    if (attached) { try { wc.debugger.detach(); } catch (e2) { /* ignore */ } }
   }
 });
 

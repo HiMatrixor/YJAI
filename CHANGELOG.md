@@ -1,5 +1,16 @@
 # YJAI · AI 阅卷助手 更新日志
 
+## v1.2.5（2026-10-20）
+
+**修复：跨域 iframe 独立进程点击（OOPIF 穿透）**
+
+- 诊断确认 e卷通的给分点/提交按钮在**跨域 iframe**（独立渲染进程 OOPIF）内，attach 顶层页面的 CDP 事件无法到达内部
+- CDP 点击升级为「iframe 感知版」：
+  - 顶层探针定位命中的跨域 iframe，换算出 iframe 内局部坐标
+  - 通过 `Target.getTargets` 找到 iframe 对应的独立渲染目标，`Target.attachToTarget` 附着进去
+  - 在 iframe 自身的输入通道用局部坐标派发完整点击序列（自动生成 pointer+mouse+click）
+- 坐标填分/提交的所有失败原因现在**写入主界面日志**（此前仅弹窗提示，自动阅卷时错误被吞掉看不到）
+
 ## v1.2.4（2026-10-20）
 
 **修复：e卷通给分点在 iframe 内，点击事件穿不进去**
