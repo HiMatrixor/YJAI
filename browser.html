@@ -57,7 +57,8 @@ const UA = {
   chrome: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
 };
 let engine = 'edge';
-let action = null;   // null | 'area' | 'input' | 'submit' | 'meta'
+let action = null;   // null | 'area' | 'input' | 'submit' | 'meta' | 'coord'
+let coordTarget = null;   // 坐标拾取的目标 'input' | 'submit'
 let pendingId = null;
 let drag = null;
 
@@ -113,6 +114,15 @@ function startPick(target){
   $('#hint').innerHTML = '请在页面中点击「'+label+'」<span class="esc">(Esc 取消)</span>';
   $('#hint').style.display = '';
 }
+function startPickCoord(target){
+  action = 'coord';
+  coordTarget = target;
+  const o = $('#overlay');
+  o.classList.add('active'); o.style.cursor = 'crosshair';
+  const label = { input:'分数框', submit:'提交按钮' }[target] || '目标';
+  $('#hint').innerHTML = '请单击「'+label+'」的中心位置 <span class="esc">(Esc 取消)</span>';
+  $('#hint').style.display = '';
+}
 function resetOverlay(){
   action = null; drag = null;
   const o = $('#overlay');
@@ -154,6 +164,10 @@ overlay.addEventListener('mouseup', async e=>{
     if(dx<5||dy<5){ toast('框选区域太小'); resetOverlay(); return; }
     const area = { x:Math.round(x), y:Math.round(y), w:Math.round(dx), h:Math.round(dy) };
     finish({ type:'area', area });
+  } else if(action==='coord'){
+    if(dx>6||dy>6){ toast('请单击坐标位置而非拖动'); resetOverlay(); return; }
+    const point = { x:Math.round(cx), y:Math.round(cy) };
+    finish({ type:'coord', target:coordTarget, point });
   } else if(action==='input'||action==='submit'||action==='meta'){
     if(dx>6||dy>6){ toast('请单击元素而非拖动'); resetOverlay(); return; }
     try{
@@ -237,6 +251,10 @@ window.YJAI.onBrowserAction(async (msg)=>{
       pendingId = id;
       startPick(data);
       break;
+    case 'start-pick-coord':
+      pendingId = id;
+      startPickCoord(data);
+      break;
     case 'capture': {
       try{
         const a = data; // {x,y,w,h}
@@ -267,6 +285,73 @@ window.YJAI.onBrowserAction(async (msg)=>{
       })()`;
       const r = await wv().executeJavaScript(code);
       finishId(id, { ok: r==='OK', result: r });
+      break;
+    }
+    case 'fill-score-coord': {
+      // 坐标式填分：对 Canvas 渲染、无真实 input 的阅卷页（如 e卷通）
+      // data = { x, y, score }
+      try{
+        const { x, y, score } = data || {};
+        if(x==null || y==null){ finishId(id, { error:'缺少坐标' }); break; }
+        const s = String(score);
+        const code = `(function(){
+          var X=${x}, Y=${y}, S=${JSON.stringify(s)};
+          function evt(el, type, opts){
+            return el.dispatchEvent(new MouseEvent(type, Object.assign({bubbles:true, cancelable:true, view:window, clientX:X, clientY:Y, button:0, buttons:1}, opts||{})));
+          }
+          // 1) 先点击坐标，触发计分面板/聚焦
+          var el = document.elementFromPoint(X, Y);
+          var target = el || document.body;
+          if(el){
+            evt(el, 'mouseover'); evt(el, 'mousemove');
+            evt(el, 'mousedown'); evt(el, 'mouseup'); evt(el, 'click');
+            if(el.focus) el.focus();
+          }
+          // 2) 若命中真实 input/textarea，直接写入
+          if(el && (el.tagName==='INPUT' || el.tagName==='TEXTAREA')){
+            var proto = (el.tagName==='TEXTAREA') ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+            var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+            if(setter) setter.call(el, S); else el.value = S;
+            el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:S}));
+            el.dispatchEvent(new Event('change', {bubbles:true}));
+            return { hit:'INPUT', value:S };
+          }
+          // 3) 否则向聚焦元素/body 派发键盘输入
+          var focus = document.activeElement || document.body;
+          function key(k, code){
+            focus.dispatchEvent(new KeyboardEvent('keydown', {bubbles:true, cancelable:true, key:k, code:code}));
+            focus.dispatchEvent(new KeyboardEvent('keypress', {bubbles:true, cancelable:true, key:k, code:code}));
+            focus.dispatchEvent(new KeyboardEvent('keyup', {bubbles:true, cancelable:true, key:k, code:code}));
+          }
+          S.split('').forEach(function(ch){
+            if(ch==='.') key('.', 'Period');
+            else key(ch, 'Digit'+ch);
+          });
+          // 4) 回车确认
+          focus.dispatchEvent(new KeyboardEvent('keydown', {bubbles:true, cancelable:true, key:'Enter', code:'Enter'}));
+          focus.dispatchEvent(new KeyboardEvent('keypress', {bubbles:true, cancelable:true, key:'Enter', code:'Enter'}));
+          focus.dispatchEvent(new KeyboardEvent('keyup', {bubbles:true, cancelable:true, key:'Enter', code:'Enter'}));
+          return { hit: (el?el.tagName:'BODY'), typed:S };
+        })()`;
+        const r = await wv().executeJavaScript(code);
+        finishId(id, { ok: !!(r && (r.value!==undefined || r.typed!==undefined)), result: r });
+      }catch(e){ finishId(id, { error:'坐标填分失败: '+e.message }); }
+      break;
+    }
+    case 'click-coord': {
+      // 坐标点击：data = { x, y }
+      try{
+        const { x, y } = data || {};
+        const code = `(function(){
+          var X=${x}, Y=${y};
+          var el = document.elementFromPoint(X, Y) || document.body;
+          function evt(type){ el.dispatchEvent(new MouseEvent(type, {bubbles:true, cancelable:true, view:window, clientX:X, clientY:Y, button:0, buttons:1})); }
+          evt('mouseover'); evt('mousemove'); evt('mousedown'); evt('mouseup'); evt('click');
+          return 'OK';
+        })()`;
+        await wv().executeJavaScript(code);
+        finishId(id, { ok:true });
+      }catch(e){ finishId(id, { error:'坐标点击失败: '+e.message }); }
       break;
     }
     case 'click-submit': {
