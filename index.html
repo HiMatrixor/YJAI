@@ -321,7 +321,7 @@
             <label style="margin:0">填分方式：</label>
             <select id="brFillMode" style="width:auto;min-width:160px">
               <option value="element">元素拾取（普通网页）</option>
-              <option value="coord">坐标点击 + 键盘模拟（e卷通等）</option>
+              <option value="coord">坐标点击 + 连点累加（e卷通等）</option>
             </select>
           </div>
           <div class="row" id="brRowElement">
@@ -331,12 +331,22 @@
             <button class="btn btn-ghost" id="brTestSubmit">🧪 测试提交</button>
           </div>
           <div class="row" id="brRowCoord" style="display:none">
-            <button class="btn btn-primary" id="brPickCoordInput">📍 分数框坐标 <span class="br-tag" id="brTagCoordInput">未拾取</span></button>
+            <button class="btn btn-primary" id="brPickCoordInput">📍 给分点坐标 <span class="br-tag" id="brTagCoordInput">未拾取</span></button>
             <button class="btn btn-ghost" id="brPickCoordSubmit">提交按钮坐标 <span class="br-tag" id="brTagCoordSubmit">未拾取</span></button>
             <button class="btn btn-ghost" id="brTestCoord">🧪 测试坐标填分</button>
           </div>
+          <div class="row" id="brRowCoordStep" style="display:none;align-items:center;margin-top:6px">
+            <label style="margin:0">每次点击加分：</label>
+            <select id="brCoordStep" style="width:auto;min-width:110px">
+              <option value="1">+1 分</option>
+              <option value="0.5">+0.5 分</option>
+              <option value="2">+2 分</option>
+              <option value="5">+5 分</option>
+            </select>
+            <span class="hint" style="margin:0">点一下给分点累加的分值（e卷通通常为 +1）</span>
+          </div>
           <div class="hint" id="brSelectorInfo" style="margin-top:10px;font-family:'Cascadia Code',Consolas,monospace">分数输入框：未配置　提交按钮：未配置</div>
-          <div class="hint" id="brCoordInfo" style="margin-top:4px;display:none;font-family:'Cascadia Code',Consolas,monospace">分数框坐标：未配置　提交坐标：未配置</div>
+          <div class="hint" id="brCoordInfo" style="margin-top:4px;display:none;font-family:'Cascadia Code',Consolas,monospace">给分点坐标：未配置　提交坐标：未配置</div>
         </div>
 
         <!-- 5 自动化设置 -->
@@ -1331,10 +1341,10 @@ function applyLicenseLock(){
 
 /* ================= 浏览器阅卷 ================= */
 const IS_DESKTOP = !!(window.YJAI && window.YJAI.isDesktop);
-let brState = { engine:'edge', area:null, selectors:{input:'',submit:'',meta:''}, coords:{input:null,submit:null}, fillMode:'element', running:false, done:0, sum:0, lastResult:null };
+let brState = { engine:'edge', area:null, selectors:{input:'',submit:'',meta:''}, coords:{input:null,submit:null}, fillMode:'element', coordStep:1, running:false, done:0, sum:0, lastResult:null };
 let browserReady = false;
-function saveBr(){ try{localStorage.setItem('yjai_br',JSON.stringify({engine:brState.engine,area:brState.area,selectors:brState.selectors,coords:brState.coords,fillMode:brState.fillMode}));}catch(e){} }
-function loadBr(){ try{const v=localStorage.getItem('yjai_br');if(v){const o=JSON.parse(v);if(o){if(o.engine)brState.engine=o.engine;if(o.area)brState.area=o.area;if(o.selectors)brState.selectors=o.selectors;if(o.coords)brState.coords=o.coords;if(o.fillMode)brState.fillMode=o.fillMode;}}}catch(e){} }
+function saveBr(){ try{localStorage.setItem('yjai_br',JSON.stringify({engine:brState.engine,area:brState.area,selectors:brState.selectors,coords:brState.coords,fillMode:brState.fillMode,coordStep:brState.coordStep}));}catch(e){} }
+function loadBr(){ try{const v=localStorage.getItem('yjai_br');if(v){const o=JSON.parse(v);if(o){if(o.engine)brState.engine=o.engine;if(o.area)brState.area=o.area;if(o.selectors)brState.selectors=o.selectors;if(o.coords)brState.coords=o.coords;if(o.fillMode)brState.fillMode=o.fillMode;if(o.coordStep)brState.coordStep=o.coordStep;}}}catch(e){} }
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function brLog(msg,cls){ const el=$('#brLog'); const d=document.createElement('div'); d.className=cls||'i'; d.textContent='['+new Date().toLocaleTimeString('zh-CN')+'] '+msg; el.appendChild(d); el.scrollTop=el.scrollHeight; }
 function brSetStatus(t){ const el=$('#brStatus'); el.innerHTML='<span>'+esc(t)+'</span>'; }
@@ -1359,6 +1369,7 @@ function initBrowser(){
   loadBr();
   $('#brEngine').value = brState.engine;
   $('#brFillMode').value = brState.fillMode || 'element';
+  $('#brCoordStep').value = String(brState.coordStep || 1);
   applyFillMode();
   if(brState.area){
     $('#brAreaInfo').textContent = 'X:'+brState.area.x+'  Y:'+brState.area.y+'  W:'+brState.area.w+'  H:'+brState.area.h;
@@ -1425,7 +1436,7 @@ async function startPickCoord(target){
   const btnMap = { input:'#brPickCoordInput', submit:'#brPickCoordSubmit' };
   const btn = $(btnMap[target]);
   if(btn) btn.classList.add('picking');
-  brSetStatus('已跳转到浏览器窗口，请单击分数框/提交按钮的中心位置…');
+  brSetStatus('已跳转到浏览器窗口，请单击给分点/提交按钮的中心位置…');
   const r = await brRelay('start-pick-coord', target);
   if(btn) btn.classList.remove('picking');
   brSetStatus('就绪');
@@ -1433,7 +1444,7 @@ async function startPickCoord(target){
   if(r && r.cancel) return;
   if(r && r.type==='coord' && r.point){
     brState.coords[target] = r.point; saveBr(); updatePickTags();
-    const label = { input:'分数框坐标', submit:'提交按钮坐标' }[target];
+    const label = { input:'给分点坐标', submit:'提交按钮坐标' }[target];
     brLog('已拾取'+label+': ('+r.point.x+','+r.point.y+')');
     toast('已拾取'+label+' ('+r.point.x+','+r.point.y+')','ok');
   }
@@ -1466,10 +1477,13 @@ async function fillScoreInPage(score){
 }
 async function fillScoreCoordInPage(score){
   const c = brState.coords.input;
-  if(!c){ toast('请先拾取分数框坐标','err'); return false; }
-  const r = await brRelay('fill-score-coord', { x:c.x, y:c.y, score:score });
+  if(!c){ toast('请先拾取给分点坐标','err'); return false; }
+  const step = Number(brState.coordStep) || 1;
+  const times = Math.round(Number(score) / step);
+  if(times <= 0){ toast('分数为 0，无需填分','err'); return false; }
+  const r = await brRelay('fill-score-coord', { x:c.x, y:c.y, score:Number(score), times:times });
   if(r && r.error){ toast(r.error,'err'); return false; }
-  if(r && !r.ok){ toast('坐标填分未成功，请确认坐标或分数面板已弹出','err'); return false; }
+  if(r && !r.ok){ toast('坐标填分未成功，请确认给分点坐标正确','err'); return false; }
   return !!(r && r.ok);
 }
 async function clickSubmitInPage(){
@@ -1503,7 +1517,7 @@ async function testCoord(){
   if(score==null) return;
   if(!/^\d+(\.\d+)?$/.test(score)){ toast('请输入有效数字','err'); return; }
   const ok = await fillScoreCoordInPage(score);
-  if(!ok){ toast('坐标填分未成功，请确认分数框坐标正确','err'); return; }
+  if(!ok){ toast('坐标填分未成功，请确认给分点坐标正确','err'); return; }
   await sleep(600);
   const ok2 = await clickSubmitCoordInPage();
   toast(ok2?'测试提交成功，请到浏览器窗口确认':'提交坐标未配置或点击失败', ok2?'ok':'err');
@@ -1531,7 +1545,7 @@ async function startAuto(){
   if(!opened){ toast('请先点击「🌐 打开浏览器」','err'); return; }
   if(!brState.area){ toast('请先框选答题区域','err'); return; }
   if(brState.fillMode === 'coord'){
-    if(!brState.coords.input){ toast('请先拾取分数框坐标','err'); return; }
+    if(!brState.coords.input){ toast('请先拾取给分点坐标','err'); return; }
   } else {
     if(!brState.selectors.input || !brState.selectors.submit){ toast('请先拾取分数输入框与提交按钮','err'); return; }
   }
@@ -1595,7 +1609,7 @@ function updatePickTags(){
   $('#brTagCoordInput').className = 'br-tag'+(c.input?' ok':'');
   $('#brTagCoordSubmit').textContent = c.submit?'已拾取':'未拾取';
   $('#brTagCoordSubmit').className = 'br-tag'+(c.submit?' ok':'');
-  $('#brCoordInfo').textContent = '分数框坐标：'+(c.input?('('+c.input.x+','+c.input.y+')'):'未配置')+'　提交坐标：'+(c.submit?('('+c.submit.x+','+c.submit.y+')'):'未配置');
+  $('#brCoordInfo').textContent = '给分点坐标：'+(c.input?('('+c.input.x+','+c.input.y+')'):'未配置')+'　提交坐标：'+(c.submit?('('+c.submit.x+','+c.submit.y+')'):'未配置');
 }
 function applyFillMode(){
   const mode = $('#brFillMode').value;
@@ -1603,9 +1617,10 @@ function applyFillMode(){
   const isCoord = mode === 'coord';
   $('#brRowElement').style.display = isCoord ? 'none' : '';
   $('#brRowCoord').style.display = isCoord ? '' : 'none';
+  $('#brRowCoordStep').style.display = isCoord ? '' : 'none';
   $('#brCoordInfo').style.display = isCoord ? '' : 'none';
   if(isCoord){
-    brSetStatus('坐标模式：请先「选择区域」框选答题区域，再拾取分数框/提交按钮坐标');
+    brSetStatus('坐标模式：请先「选择区域」框选答题区域，再拾取给分点/提交按钮坐标；给分点为点击后分数累加的位置');
   } else {
     brSetStatus('元素模式：请在页面中拾取分数输入框与提交按钮');
   }
@@ -1627,6 +1642,7 @@ function bindBrowserEvents(){
   $('#brPickMeta').onclick = ()=>startPick('meta');
   $('#brTestSubmit').onclick = testSubmit;
   $('#brFillMode').addEventListener('change', applyFillMode);
+  $('#brCoordStep').addEventListener('change', e=>{ brState.coordStep = Number(e.target.value)||1; saveBr(); });
   $('#brPickCoordInput').onclick = ()=>startPickCoord('input');
   $('#brPickCoordSubmit').onclick = ()=>startPickCoord('submit');
   $('#brTestCoord').onclick = testCoord;
