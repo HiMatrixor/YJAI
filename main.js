@@ -171,9 +171,16 @@ function sleepMs(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 ipcMain.handle('browser:cdp-click', async (e, payload) => {
   const { webContentsId, x, y, times } = payload || {};
-  if (webContentsId == null) return { error: '缺少 webContentsId' };
-  const wc = webContents.fromId(webContentsId);
-  if (!wc || wc.isDestroyed()) return { error: '目标页面已关闭' };
+  // 渲染端不再传 webContentsId（webview.getWebContentsId() 走 GUEST_VIEW_MANAGER_CALL，
+  // 在部分页面会报 "An object could not be cloned"），由主进程自动定位 webview guest
+  let wc = null;
+  if (webContentsId != null) wc = webContents.fromId(webContentsId);
+  if (!wc) {
+    const guests = webContents.getAllWebContents().filter(w => !w.isDestroyed() && w.getType() === 'webview');
+    wc = guests[0] || null;
+  }
+  if (!wc || wc.isDestroyed()) return { error: '未找到浏览器页面（webview），请先打开浏览器并加载页面' };
+  if (x == null || y == null) return { error: '缺少坐标' };
   const n = Math.max(1, Math.round(Number(times) || 1));
   let attached = false;
   try {
@@ -198,7 +205,7 @@ ipcMain.handle('browser:cdp-click', async (e, payload) => {
             }
           }
           var rect = el.getBoundingClientRect();
-          return {hit: el.tagName + (el.id?('#'+el.id):''), x: Math.round(x), y: Math.round(y)};
+          return {hit: el.tagName + (el.id?('#'+el.id):'')};
         }
         return res(document, ${x}, ${y}, 0);
       })()`

@@ -388,8 +388,7 @@ window.YJAI.onBrowserAction(async (msg)=>{
         let r = await wv().executeJavaScript(code);
         // 跨域 iframe：合成事件穿不进去，回退 CDP（浏览器级输入，等效真实点击，可命中 iframe 内部）
         if((!r || !r.clicked || r.cross === true || String(r.hit||'').toUpperCase().startsWith('IFRAME'))){
-          const wid = wv().getWebContentsId();
-          const cr = await window.YJAI.cdpClick({ webContentsId: wid, x, y, times: n });
+          const cr = await window.YJAI.cdpClick({ x, y, times: n });
           if(cr && cr.error){ finishId(id, { ok:false, result:r, error:'CDP 回退失败: '+cr.error }); break; }
           finishId(id, { ok:true, result:{ clicked:(cr&&cr.clicked)||n, hit:(r&&r.hit)||'IFRAME', mode:'cdp', target:(cr&&cr.target)||'', local:(cr&&cr.local)||null } });
           break;
@@ -443,8 +442,7 @@ window.YJAI.onBrowserAction(async (msg)=>{
         const hitStr = String((r && r.hit) || '');
         const cross = r && r.cross === true;
         if(cross || hitStr.toUpperCase().startsWith('IFRAME') || hitStr === 'NONE'){
-          const wid = wv().getWebContentsId();
-          const cr = await window.YJAI.cdpClick({ webContentsId: wid, x, y, times: 1 });
+          const cr = await window.YJAI.cdpClick({ x, y, times: 1 });
           if(cr && cr.error){ finishId(id, { ok:false, result:r, error:'CDP 回退失败: '+cr.error }); break; }
           finishId(id, { ok:true, result:{ hit:hitStr||'IFRAME', mode:'cdp', target:(cr&&cr.target)||'', local:(cr&&cr.local)||null } });
           break;

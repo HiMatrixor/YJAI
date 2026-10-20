@@ -1,5 +1,13 @@
 # YJAI · AI 阅卷助手 更新日志
 
+## v1.2.6（2026-10-20）
+
+**修复：跨域 iframe 点击报「An object could not be cloned」**
+
+- 修复 CDP 回退链路上 `webview.getWebContentsId()` 触发 `GUEST_VIEW_MANAGER_CALL` 克隆错误：主进程现在**自动定位** webview 的 guest 页面，渲染端不再调用任何 webview 方法传参，只发纯数据
+- 修复 CDP 顶层探针中的变量引用错误（非跨域场景下探针会报未定义变量）
+- 跨域 iframe（OOPIF）独立进程点击保持 v1.2.5 方案：attach 进 iframe 自身的渲染目标，用局部坐标派发真实点击
+
 ## v1.2.5（2026-10-20）
 
 **修复：跨域 iframe 独立进程点击（OOPIF 穿透）**
