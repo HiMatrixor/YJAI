@@ -1,5 +1,13 @@
 # YJAI · AI 阅卷助手 更新日志
 
+## v1.2.2（2026-10-20）
+
+**修复：e卷通连点累加与提交点击不生效**
+
+- 将坐标点击从 `webview.sendInputEvent`（发 `mouseDown/up` 不生成 Pointer Events、且依赖窗口聚焦）改为 **CDP `Input.dispatchMouseEvent`**（Chrome DevTools Protocol）
+- CDP 走 Chromium 完整输入管线，自动生成 pointer + mouse + click 全套事件，且不依赖窗口聚焦，等效真实点击
+- 同时修复「给分点连点累加」与「提交按钮点击」两个动作
+
 ## v1.2.1（2026-10-20）
 
 **修复：e卷通坐标填分无法提交分数**

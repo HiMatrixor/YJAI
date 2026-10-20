@@ -290,39 +290,26 @@ window.YJAI.onBrowserAction(async (msg)=>{
     }
     case 'fill-score-coord': {
       // 坐标式填分（连点累加版）：e卷通等平台点击给分点每次累加 1 分，无键盘输入
-      // 用 webview.sendInputEvent 发送 trusted 鼠标事件，等效用户真实点击
+      // 通过 CDP Input.dispatchMouseEvent 发送真实点击（自动生成 pointer+mouse+click）
       // data = { x, y, score, times }  times = 需要点击的次数
       try{
         const { x, y, times } = data || {};
         if(x==null || y==null){ finishId(id, { error:'缺少坐标' }); break; }
         const n = Math.max(1, Math.round(Number(times) || 0));
-        const w = wv();
-        // 0) 确保浏览器窗口聚焦（sendInputEvent 要求窗口聚焦）
-        try{ await window.YJAI.focusBrowserWindow(); }catch(e){}
-        await sleep(150);
-        // 1) 连点 n 次给分点，每次累加对应分值
-        for(let i=0; i<n; i++){
-          w.sendInputEvent({ type:'mouseMove', x, y });
-          await sleep(40);
-          w.sendInputEvent({ type:'mouseDown', x, y, button:'left', clickCount:1 });
-          w.sendInputEvent({ type:'mouseUp', x, y, button:'left', clickCount:1 });
-          await sleep(120);
-        }
+        const wid = wv().getWebContentsId();
+        const r = await window.YJAI.cdpClick({ webContentsId: wid, x, y, times: n });
+        if(r && r.error){ finishId(id, r); break; }
         finishId(id, { ok:true, result:{ clicked:n } });
       }catch(e){ finishId(id, { error:'坐标填分失败: '+e.message }); }
       break;
     }
     case 'click-coord': {
-      // 坐标点击（真实输入事件版）：data = { x, y }
+      // 坐标点击（CDP 真实点击版）：data = { x, y }
       try{
         const { x, y } = data || {};
-        const w = wv();
-        try{ await window.YJAI.focusBrowserWindow(); }catch(e){}
-        await sleep(150);
-        w.sendInputEvent({ type:'mouseMove', x, y });
-        await sleep(50);
-        w.sendInputEvent({ type:'mouseDown', x, y, button:'left', clickCount:1 });
-        w.sendInputEvent({ type:'mouseUp', x, y, button:'left', clickCount:1 });
+        const wid = wv().getWebContentsId();
+        const r = await window.YJAI.cdpClick({ webContentsId: wid, x, y, times: 1 });
+        if(r && r.error){ finishId(id, r); break; }
         finishId(id, { ok:true });
       }catch(e){ finishId(id, { error:'坐标点击失败: '+e.message }); }
       break;

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, Menu, ipcMain } = require('electron');
+const { app, BrowserWindow, shell, Menu, ipcMain, webContents } = require('electron');
 const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
@@ -158,6 +158,39 @@ ipcMain.handle('browser:relay', (e, msg) => {
     ipcMain.on('browser:result', handler);
     bw.webContents.send('browser:action', { id, action: msg.action, data: msg.data });
   });
+});
+
+/* ============ CDP 真实输入点击（通过 DevTools Protocol，自动生成 pointer+mouse+click） ============ */
+// 用于 e卷通等 Canvas 平台：webview.sendInputEvent 的 mouseDown 不生成 Pointer Events，
+// 而 Canvas 给分点通常监听 pointerdown/pointerup。CDP Input.dispatchMouseEvent 走完整输入管线，最可靠。
+function sleepMs(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+ipcMain.handle('browser:cdp-click', async (e, payload) => {
+  const { webContentsId, x, y, times } = payload || {};
+  if (webContentsId == null) return { error: '缺少 webContentsId' };
+  const wc = webContents.fromId(webContentsId);
+  if (!wc || wc.isDestroyed()) return { error: '目标页面已关闭' };
+  const n = Math.max(1, Math.round(Number(times) || 1));
+  let attached = false;
+  try {
+    if (!wc.debugger.isAttached()) {
+      wc.debugger.attach('1.3');
+      attached = true;
+    }
+    for (let i = 0; i < n; i++) {
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+      await sleepMs(25);
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+      await sleepMs(45);
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+      await sleepMs(135);
+    }
+    return { ok: true, clicked: n };
+  } catch (err) {
+    return { error: String(err && err.message || err) };
+  } finally {
+    if (attached) { try { wc.debugger.detach(); } catch (e) { /* ignore */ } }
+  }
 });
 
 app.whenReady().then(() => {
