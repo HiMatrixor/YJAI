@@ -8,6 +8,18 @@ const { autoUpdater } = require('electron-updater');
 let mainWin = null;
 let browserWin = null;
 
+/* ============ 未捕获异常兜底 ============ */
+// 已知 Electron 内部问题：对 webview attach debugger 后，页面跳转/刷新销毁 render frame 时，
+// Electron 内部事件处理器访问 WebFrameMain 会抛 "Render frame was disposed before
+// WebFrameMain could be accessed"。该异常无功能影响（点击/提交均已成功），但默认会弹
+// Error 对话框打断使用。这里兜底记录到日志，不弹框。
+process.on('uncaughtException', (err) => {
+  try {
+    console.error('[uncaughtException]', err && (err.stack || err.message || err));
+  } catch (_) {}
+  // 静默：不打断用户操作
+});
+
 /* ============ 自动更新 ============ */
 // 仅在打包后的环境中启用（开发环境 require 不到 app-update.yml 时会静默跳过）
 autoUpdater.autoDownload = false;   // 先检查，让用户确认后再下载

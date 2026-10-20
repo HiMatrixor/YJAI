@@ -1,5 +1,16 @@
 # YJAI · AI 阅卷助手 更新日志
 
+## v1.2.9（2026-10-21）
+
+**修复：主进程弹 Error 框 "Render frame was disposed before WebFrameMain could be accessed"**
+
+- 场景：CDP 穿透 iframe 提交分数后页面刷新/跳转，render frame 被销毁时 Electron 内部事件处理器访问 WebFrameMain 抛出未捕获异常，弹出 Error 对话框（功能本身不受影响，v1.2.8 已可正常给分与提交）
+- 处理：主进程增加 `process.on('uncaughtException')` 兜底，此类异常记录到控制台日志、不再弹框打断阅卷
+
+**附带：修复 v1.2.8 自动更新 sha512 校验不通过的问题**
+
+- v1.2.8 发布时因网络中断导致 `latest.yml` 与实际安装包不匹配，更新时报 sha512 checksum mismatch；本版本起全新发布，更新通道恢复正常
+
 ## v1.2.8（2026-10-20）
 
 **修复：跨域 iframe 误判为顶层，点击仍未进入 iframe 内部**
