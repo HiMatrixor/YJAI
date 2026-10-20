@@ -195,16 +195,15 @@ ipcMain.handle('browser:cdp-click', async (e, payload) => {
           if(!el) return {hit:'NONE'};
           if((el.tagName==='IFRAME'||el.tagName==='FRAME') && depth<8){
             var r = el.getBoundingClientRect();
-            try{
-              if(el.contentDocument){
-                var inner = res(el.contentDocument, cx-r.left, cy-r.top, depth+1);
-                if(inner && inner.hit!=='NONE') return inner;
-              }
-            }catch(err){
-              return {cross:true, ix:Math.round(cx-r.left), iy:Math.round(cy-r.top), src:el.src||'', id:(el.id||'')};
+            var idoc = null;
+            try{ idoc = el.contentDocument; }catch(err){}
+            // 跨域 iframe：Chrome 访问 contentDocument 返回 null（不抛异常），必须按 null 判定
+            if(idoc && el.contentWindow){
+              var inner = res(idoc, cx-r.left, cy-r.top, depth+1);
+              if(inner && inner.hit!=='NONE') return inner;
             }
+            return {cross:true, ix:Math.round(cx-r.left), iy:Math.round(cy-r.top), src:el.src||'', id:(el.id||'')};
           }
-          var rect = el.getBoundingClientRect();
           return {hit: el.tagName + (el.id?('#'+el.id):'')};
         }
         return res(document, ${x}, ${y}, 0);

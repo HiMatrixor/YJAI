@@ -338,20 +338,23 @@ window.YJAI.onBrowserAction(async (msg)=>{
             if((el.tagName==='IFRAME' || el.tagName==='FRAME') && depth < 8){
               var r = el.getBoundingClientRect();
               var ix = cx - r.left, iy = cy - r.top;
-              try{
-                var idoc = el.contentDocument;
-                if(idoc && el.contentWindow){
-                  var inner = descend(idoc, ix, iy, depth+1);
-                  if(inner && inner.hit !== 'NONE') return inner;
-                }
-              }catch(e){ return {hit:tagOf(el), cross:true, ix:Math.round(ix), iy:Math.round(iy), src:el.src||''}; }
+              var idoc = null;
+              try{ idoc = el.contentDocument; }catch(e){}
+              // 跨域 iframe：Chrome 访问 contentDocument 返回 null（不抛异常），必须按 null 判定
+              if(idoc && el.contentWindow){
+                var inner = descend(idoc, ix, iy, depth+1);
+                if(inner) return inner;
+                return {hit:tagOf(el), cross:true, ix:Math.round(ix), iy:Math.round(iy), src:el.src||''};
+              }
+              return {hit:tagOf(el), cross:true, ix:Math.round(ix), iy:Math.round(iy), src:el.src||''};
             }
             return {hit:tagOf(el), cross:false};
           }
           function clickOnce(){
             var t = descend(document, x, y, 0);
             if(!t || t.hit === 'NONE') return null;
-            // 再次 descend 拿最内层元素派发事件（避免返回 DOM 引用到主进程）
+            // 仅当确定同源可穿透时才在页面内派发合成事件；跨域一律交由 CDP 处理
+            if(t.cross) return t;
             var el = document.elementFromPoint(x, y) || document.body;
             var cw = window;
             var base = {bubbles:true, cancelable:true, view:cw, clientX:x, clientY:y, screenX:x, screenY:y};
@@ -410,18 +413,21 @@ window.YJAI.onBrowserAction(async (msg)=>{
             if((el.tagName==='IFRAME' || el.tagName==='FRAME') && depth < 8){
               var r = el.getBoundingClientRect();
               var ix = cx - r.left, iy = cy - r.top;
-              try{
-                var idoc = el.contentDocument;
-                if(idoc && el.contentWindow){
-                  var inner = descend(idoc, ix, iy, depth+1);
-                  if(inner && inner.hit !== 'NONE') return inner;
-                }
-              }catch(e){ return {hit:tagOf(el), cross:true, ix:Math.round(ix), iy:Math.round(iy), src:el.src||''}; }
+              var idoc = null;
+              try{ idoc = el.contentDocument; }catch(e){}
+              // 跨域 iframe：Chrome 访问 contentDocument 返回 null（不抛异常），必须按 null 判定
+              if(idoc && el.contentWindow){
+                var inner = descend(idoc, ix, iy, depth+1);
+                if(inner) return inner;
+              }
+              return {hit:tagOf(el), cross:true, ix:Math.round(ix), iy:Math.round(iy), src:el.src||''};
             }
             return {hit:tagOf(el), cross:false};
           }
           var t = descend(document, x, y, 0);
           if(!t || t.hit === 'NONE') return JSON.stringify({hit:'NONE', cross:false});
+          // 跨域 iframe：不在页面内派发（穿不进去），直接交由 CDP
+          if(t.cross) return JSON.stringify({hit:t.hit, cross:true});
           var el = document.elementFromPoint(x, y) || document.body;
           var base = {bubbles:true, cancelable:true, view:window, clientX:x, clientY:y, screenX:x, screenY:y};
           if(window.PointerEvent){

@@ -1,5 +1,14 @@
 # YJAI · AI 阅卷助手 更新日志
 
+## v1.2.8（2026-10-20）
+
+**修复：跨域 iframe 误判为顶层，点击仍未进入 iframe 内部**
+
+- 日志显示 CDP 回退已触发但「→ top」：Chrome 对跨域 iframe 访问 `contentDocument` **返回 null 而非抛异常**，此前仅在抛异常时判定跨域，导致三处探针（顶层探针 / 页面内两处）全部误判为顶层，点击落在 iframe 外壳上
+- 修正跨域判定：`contentDocument` 为 null 或抛异常，一律按跨域处理
+- 跨域时页面内不再派发无效合成事件，直接进入 iframe 独立渲染目标（OOPIF）用局部坐标点击
+- 说明：直接打开 `ls.xiaoxianai.cn/...` 会空白是正常的（该页需要从 e卷通入口携带登录态跳转），请始终从 `ejt.xkw.com/yuejuan/wsyj` 进入
+
 ## v1.2.7（2026-10-20）
 
 **修复：`GUEST_VIEW_MANAGER_CALL: An object could not be cloned` 根因**
