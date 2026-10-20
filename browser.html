@@ -168,7 +168,27 @@ overlay.addEventListener('mouseup', async e=>{
   } else if(action==='coord'){
     if(dx>6||dy>6){ toast('请单击坐标位置而非拖动'); resetOverlay(); return; }
     const point = { x:Math.round(cx), y:Math.round(cy) };
-    finish({ type:'coord', target:coordTarget, point });
+    // 诊断：命中元素 + 是否在 iframe 内（用于定位坐标/iframe 问题）
+    let diag = '';
+    try{
+      const dcode = `(function(){
+        var x=${point.x}, y=${point.y};
+        var e = document.elementFromPoint(x, y);
+        if(!e) return 'NONE';
+        var info = e.tagName + (e.id?('#'+e.id):'') + (e.className&&typeof e.className==='string'?('.'+String(e.className).trim().split(/\\s+/).slice(0,2).join('.')):'');
+        var ifs = document.querySelectorAll('iframe, frame');
+        for(var i=0;i<ifs.length;i++){
+          var r=ifs[i].getBoundingClientRect();
+          if(x>=r.left && x<=r.right && y>=r.top && y<=r.bottom){
+            info += ' [iframe:'+(ifs[i].id||ifs[i].src||i)+']';
+            break;
+          }
+        }
+        return info;
+      })()`;
+      diag = await wv().executeJavaScript(dcode);
+    }catch(err){ diag = '诊断失败:'+err.message; }
+    finish({ type:'coord', target:coordTarget, point, diag });
   } else if(action==='input'||action==='submit'||action==='meta'){
     if(dx>6||dy>6){ toast('请单击元素而非拖动'); resetOverlay(); return; }
     try{
@@ -290,27 +310,66 @@ window.YJAI.onBrowserAction(async (msg)=>{
     }
     case 'fill-score-coord': {
       // 坐标式填分（连点累加版）：e卷通等平台点击给分点每次累加 1 分，无键盘输入
-      // 通过 CDP Input.dispatchMouseEvent 发送真实点击（自动生成 pointer+mouse+click）
-      // data = { x, y, score, times }  times = 需要点击的次数
+      // 在页面内派发完整合成事件序列（pointer + mouse + click），连点 n 次
+      // data = { x, y, score, times }
       try{
         const { x, y, times } = data || {};
         if(x==null || y==null){ finishId(id, { error:'缺少坐标' }); break; }
         const n = Math.max(1, Math.round(Number(times) || 0));
-        const wid = wv().getWebContentsId();
-        const r = await window.YJAI.cdpClick({ webContentsId: wid, x, y, times: n });
-        if(r && r.error){ finishId(id, r); break; }
-        finishId(id, { ok:true, result:{ clicked:n } });
+        const code = `(function(){
+          var x=${x}, y=${y}, n=${n};
+          function hit(){
+            var e = document.elementFromPoint(x, y);
+            if(!e) return 'NONE';
+            return e.tagName + (e.id?('#'+e.id):'') + (e.className&&typeof e.className==='string'?('.'+String(e.className).trim().split(/\\s+/).slice(0,2).join('.')):'');
+          }
+          function clickAt(){
+            var el = document.elementFromPoint(x, y) || document.body;
+            var base = {bubbles:true, cancelable:true, view:window, clientX:x, clientY:y, screenX:x, screenY:y};
+            // Pointer 事件（Canvas 给分点通常监听 pointerdown/pointerup）
+            if(window.PointerEvent){
+              try{ el.dispatchEvent(new PointerEvent('pointerover', Object.assign({}, base, {pointerId:1, pointerType:'mouse', isPrimary:true}))); }catch(e){}
+              try{ el.dispatchEvent(new PointerEvent('pointerdown', Object.assign({}, base, {pointerId:1, pointerType:'mouse', isPrimary:true, button:0, buttons:1}))); }catch(e){}
+              try{ el.dispatchEvent(new PointerEvent('pointerup', Object.assign({}, base, {pointerId:1, pointerType:'mouse', isPrimary:true, button:0, buttons:0}))); }catch(e){}
+            }
+            // Mouse 事件（传统）
+            try{ el.dispatchEvent(new MouseEvent('mousedown', Object.assign({}, base, {button:0, buttons:1}))); }catch(e){}
+            try{ el.dispatchEvent(new MouseEvent('mouseup', Object.assign({}, base, {button:0, buttons:0}))); }catch(e){}
+            try{ el.dispatchEvent(new MouseEvent('click', Object.assign({}, base, {button:0}))); }catch(e){}
+          }
+          return new Promise(function(resolve){
+            var i = 0;
+            var timer = setInterval(function(){
+              clickAt(); i++;
+              if(i >= n){ clearInterval(timer); resolve({clicked:i, hit:hit()}); }
+            }, 200);
+          });
+        })()`;
+        const r = await wv().executeJavaScript(code);
+        finishId(id, { ok: !!(r && r.clicked), result: r });
       }catch(e){ finishId(id, { error:'坐标填分失败: '+e.message }); }
       break;
     }
     case 'click-coord': {
-      // 坐标点击（CDP 真实点击版）：data = { x, y }
+      // 坐标点击（合成事件版）：data = { x, y }
       try{
         const { x, y } = data || {};
-        const wid = wv().getWebContentsId();
-        const r = await window.YJAI.cdpClick({ webContentsId: wid, x, y, times: 1 });
-        if(r && r.error){ finishId(id, r); break; }
-        finishId(id, { ok:true });
+        const code = `(function(){
+          var x=${x}, y=${y};
+          var el = document.elementFromPoint(x, y) || document.body;
+          var base = {bubbles:true, cancelable:true, view:window, clientX:x, clientY:y, screenX:x, screenY:y};
+          if(window.PointerEvent){
+            try{ el.dispatchEvent(new PointerEvent('pointerover', Object.assign({}, base, {pointerId:1, pointerType:'mouse', isPrimary:true}))); }catch(e){}
+            try{ el.dispatchEvent(new PointerEvent('pointerdown', Object.assign({}, base, {pointerId:1, pointerType:'mouse', isPrimary:true, button:0, buttons:1}))); }catch(e){}
+            try{ el.dispatchEvent(new PointerEvent('pointerup', Object.assign({}, base, {pointerId:1, pointerType:'mouse', isPrimary:true, button:0, buttons:0}))); }catch(e){}
+          }
+          try{ el.dispatchEvent(new MouseEvent('mousedown', Object.assign({}, base, {button:0, buttons:1}))); }catch(e){}
+          try{ el.dispatchEvent(new MouseEvent('mouseup', Object.assign({}, base, {button:0, buttons:0}))); }catch(e){}
+          try{ el.dispatchEvent(new MouseEvent('click', Object.assign({}, base, {button:0}))); }catch(e){}
+          return el.tagName + (el.id?('#'+el.id):'') + (el.className&&typeof el.className==='string'?('.'+String(el.className).trim().split(/\\s+/).slice(0,2).join('.')):'');
+        })()`;
+        const r = await wv().executeJavaScript(code);
+        finishId(id, { ok:true, result: r });
       }catch(e){ finishId(id, { error:'坐标点击失败: '+e.message }); }
       break;
     }

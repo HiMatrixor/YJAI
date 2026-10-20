@@ -1445,7 +1445,8 @@ async function startPickCoord(target){
   if(r && r.type==='coord' && r.point){
     brState.coords[target] = r.point; saveBr(); updatePickTags();
     const label = { input:'给分点坐标', submit:'提交按钮坐标' }[target];
-    brLog('已拾取'+label+': ('+r.point.x+','+r.point.y+')');
+    brLog('已拾取'+label+': ('+r.point.x+','+r.point.y+')', 'i');
+    if(r.diag) brLog('  └ 命中元素: '+r.diag, 'i');
     toast('已拾取'+label+' ('+r.point.x+','+r.point.y+')','ok');
   }
 }
@@ -1484,6 +1485,7 @@ async function fillScoreCoordInPage(score){
   const r = await brRelay('fill-score-coord', { x:c.x, y:c.y, score:Number(score), times:times });
   if(r && r.error){ toast(r.error,'err'); return false; }
   if(r && !r.ok){ toast('坐标填分未成功，请确认给分点坐标正确','err'); return false; }
+  if(r && r.result) brLog('连点 '+r.result.clicked+' 次，命中元素: '+r.result.hit, 'i');
   return !!(r && r.ok);
 }
 async function clickSubmitInPage(){
@@ -1500,6 +1502,7 @@ async function clickSubmitCoordInPage(){
   if(!c){ toast('请先拾取提交按钮坐标','err'); return false; }
   const r = await brRelay('click-coord', { x:c.x, y:c.y });
   if(r && r.error){ toast(r.error,'err'); return false; }
+  if(r && r.result) brLog('提交点击命中元素: '+r.result, 'i');
   return !!(r && r.ok);
 }
 async function testSubmit(){
