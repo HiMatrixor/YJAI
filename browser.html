@@ -332,68 +332,65 @@ window.YJAI.onBrowserAction(async (msg)=>{
             if(!el) return 'NONE';
             return el.tagName + (el.id?('#'+el.id):'') + (el.className&&typeof el.className==='string'?('.'+String(el.className).trim().split(/\\s+/).slice(0,2).join('.')):'');
           }
-          // 递归穿透 iframe，找到最内层命中文档与换算后的局部坐标
-          function resolve(doc, win, cx, cy, depth){
+          function descend(doc, cx, cy, depth){
             var el = doc.elementFromPoint(cx, cy);
-            if(!el) return {doc:doc, win:win, el:null, x:cx, y:cy, hit:'NONE'};
+            if(!el) return {hit:'NONE', cross:false};
             if((el.tagName==='IFRAME' || el.tagName==='FRAME') && depth < 8){
               var r = el.getBoundingClientRect();
               var ix = cx - r.left, iy = cy - r.top;
               try{
                 var idoc = el.contentDocument;
                 if(idoc && el.contentWindow){
-                  var inner = resolve(idoc, el.contentWindow, ix, iy, depth+1);
-                  if(inner) return inner;
+                  var inner = descend(idoc, ix, iy, depth+1);
+                  if(inner && inner.hit !== 'NONE') return inner;
                 }
-              }catch(e){ return {doc:doc, win:win, el:el, x:cx, y:cy, hit:tagOf(el), cross:true}; }
+              }catch(e){ return {hit:tagOf(el), cross:true, ix:Math.round(ix), iy:Math.round(iy), src:el.src||''}; }
             }
-            return {doc:doc, win:win, el:el, x:cx, y:cy, hit:tagOf(el)};
+            return {hit:tagOf(el), cross:false};
           }
           function clickOnce(){
-            var t = resolve(document, window, x, y, 0);
-            if(!t.el) return;
-            var w = t.win || window, d = t.doc;
-            var base = {bubbles:true, cancelable:true, view:w, clientX:t.x, clientY:t.y, screenX:t.x, screenY:t.y};
-            var el = t.el;
-            if(w.PointerEvent){
-              try{ el.dispatchEvent(new w.PointerEvent('pointerover', Object.assign({}, base, {pointerId:1, pointerType:'mouse', isPrimary:true}))); }catch(e){}
-              try{ el.dispatchEvent(new w.PointerEvent('pointerdown', Object.assign({}, base, {pointerId:1, pointerType:'mouse', isPrimary:true, button:0, buttons:1}))); }catch(e){}
-              try{ el.dispatchEvent(new w.PointerEvent('pointerup', Object.assign({}, base, {pointerId:1, pointerType:'mouse', isPrimary:true, button:0, buttons:0}))); }catch(e){}
+            var t = descend(document, x, y, 0);
+            if(!t || t.hit === 'NONE') return null;
+            // 再次 descend 拿最内层元素派发事件（避免返回 DOM 引用到主进程）
+            var el = document.elementFromPoint(x, y) || document.body;
+            var cw = window;
+            var base = {bubbles:true, cancelable:true, view:cw, clientX:x, clientY:y, screenX:x, screenY:y};
+            if(cw.PointerEvent){
+              try{ el.dispatchEvent(new cw.PointerEvent('pointerover', Object.assign({}, base, {pointerId:1, pointerType:'mouse', isPrimary:true}))); }catch(e){}
+              try{ el.dispatchEvent(new cw.PointerEvent('pointerdown', Object.assign({}, base, {pointerId:1, pointerType:'mouse', isPrimary:true, button:0, buttons:1}))); }catch(e){}
+              try{ el.dispatchEvent(new cw.PointerEvent('pointerup', Object.assign({}, base, {pointerId:1, pointerType:'mouse', isPrimary:true, button:0, buttons:0}))); }catch(e){}
             }
-            try{ el.dispatchEvent(new w.MouseEvent('mousedown', Object.assign({}, base, {button:0, buttons:1}))); }catch(e){}
-            try{ el.dispatchEvent(new w.MouseEvent('mouseup', Object.assign({}, base, {button:0, buttons:0}))); }catch(e){}
-            try{ el.dispatchEvent(new w.MouseEvent('click', Object.assign({}, base, {button:0}))); }catch(e){}
+            try{ el.dispatchEvent(new cw.MouseEvent('mousedown', Object.assign({}, base, {button:0, buttons:1}))); }catch(e){}
+            try{ el.dispatchEvent(new cw.MouseEvent('mouseup', Object.assign({}, base, {button:0, buttons:0}))); }catch(e){}
+            try{ el.dispatchEvent(new cw.MouseEvent('click', Object.assign({}, base, {button:0}))); }catch(e){}
             return t;
           }
-          return new Promise(function(resolve){
-            var first = clickOnce();
-            var lastHit = first ? first.hit : 'NONE';
-            var cross = first ? !!first.cross : false;
-            if(first && first.el === null){ resolve({clicked:0, hit:'NONE'}); return; }
-            var i = 1;
-            var timer = setInterval(function(){
-              if(i >= n){
-                clearInterval(timer);
-                // 最后再确认一次命中元素（穿透后）
-                var fin = resolve(document, window, x, y, 0);
-                resolve({clicked:i, hit: fin ? fin.hit : lastHit, cross: fin ? !!fin.cross : cross});
-                return;
-              }
-              var t = clickOnce();
-              if(t && t.hit) lastHit = t.hit;
-              i++;
-            }, 200);
-          });
+          var first = clickOnce();
+          var lastHit = first ? first.hit : 'NONE';
+          var cross = first ? !!first.cross : false;
+          var i = 1;
+          while(i < n){
+            var t2 = clickOnce();
+            if(t2 && t2.hit) lastHit = t2.hit;
+            if(t2 && t2.cross) cross = true;
+            i++;
+            // 同步等待无法 sleep，用 busy 循环近似节流（在页面内阻塞 200ms）
+            var end = Date.now() + 200;
+            while(Date.now() < end){ /* 节流 */ }
+          }
+          return JSON.stringify({clicked:n, hit:lastHit, cross:cross});
         })()`;
         let r = await wv().executeJavaScript(code);
+        let info = {};
+        try{ info = (typeof r === 'string') ? JSON.parse(r) : (r || {}); }catch(e){ info = {}; }
         // 跨域 iframe：合成事件穿不进去，回退 CDP（浏览器级输入，等效真实点击，可命中 iframe 内部）
-        if((!r || !r.clicked || r.cross === true || String(r.hit||'').toUpperCase().startsWith('IFRAME'))){
+        if(!info.clicked || info.cross === true || String(info.hit||'').toUpperCase().startsWith('IFRAME')){
           const cr = await window.YJAI.cdpClick({ x, y, times: n });
-          if(cr && cr.error){ finishId(id, { ok:false, result:r, error:'CDP 回退失败: '+cr.error }); break; }
-          finishId(id, { ok:true, result:{ clicked:(cr&&cr.clicked)||n, hit:(r&&r.hit)||'IFRAME', mode:'cdp', target:(cr&&cr.target)||'', local:(cr&&cr.local)||null } });
+          if(cr && cr.error){ finishId(id, { ok:false, result:info, error:'CDP 回退失败: '+cr.error }); break; }
+          finishId(id, { ok:true, result:{ clicked:(cr&&cr.clicked)||n, hit:info.hit||'IFRAME', mode:'cdp', target:(cr&&cr.target)||'', local:(cr&&cr.local)||null } });
           break;
         }
-        finishId(id, { ok: !!(r && r.clicked), result: r });
+        finishId(id, { ok: !!(info.clicked), result: info });
       }catch(e){ finishId(id, { error:'坐标填分失败: '+e.message }); }
       break;
     }
@@ -407,40 +404,41 @@ window.YJAI.onBrowserAction(async (msg)=>{
             if(!el) return 'NONE';
             return el.tagName + (el.id?('#'+el.id):'') + (el.className&&typeof el.className==='string'?('.'+String(el.className).trim().split(/\\s+/).slice(0,2).join('.')):'');
           }
-          function resolve(doc, win, cx, cy, depth){
+          function descend(doc, cx, cy, depth){
             var el = doc.elementFromPoint(cx, cy);
-            if(!el) return {doc:doc, win:win, el:null, x:cx, y:cy, hit:'NONE'};
+            if(!el) return {hit:'NONE', cross:false};
             if((el.tagName==='IFRAME' || el.tagName==='FRAME') && depth < 8){
               var r = el.getBoundingClientRect();
               var ix = cx - r.left, iy = cy - r.top;
               try{
                 var idoc = el.contentDocument;
                 if(idoc && el.contentWindow){
-                  var inner = resolve(idoc, el.contentWindow, ix, iy, depth+1);
-                  if(inner) return inner;
+                  var inner = descend(idoc, ix, iy, depth+1);
+                  if(inner && inner.hit !== 'NONE') return inner;
                 }
-              }catch(e){ return {doc:doc, win:win, el:el, x:cx, y:cy, hit:tagOf(el), cross:true}; }
+              }catch(e){ return {hit:tagOf(el), cross:true, ix:Math.round(ix), iy:Math.round(iy), src:el.src||''}; }
             }
-            return {doc:doc, win:win, el:el, x:cx, y:cy, hit:tagOf(el)};
+            return {hit:tagOf(el), cross:false};
           }
-          var t = resolve(document, window, x, y, 0);
-          if(!t.el) return {hit:'NONE', cross:false};
-          var w = t.win || window;
-          var base = {bubbles:true, cancelable:true, view:w, clientX:t.x, clientY:t.y, screenX:t.x, screenY:t.y};
-          var el = t.el;
-          if(w.PointerEvent){
-            try{ el.dispatchEvent(new w.PointerEvent('pointerover', Object.assign({}, base, {pointerId:1, pointerType:'mouse', isPrimary:true}))); }catch(e){}
-            try{ el.dispatchEvent(new w.PointerEvent('pointerdown', Object.assign({}, base, {pointerId:1, pointerType:'mouse', isPrimary:true, button:0, buttons:1}))); }catch(e){}
-            try{ el.dispatchEvent(new w.PointerEvent('pointerup', Object.assign({}, base, {pointerId:1, pointerType:'mouse', isPrimary:true, button:0, buttons:0}))); }catch(e){}
+          var t = descend(document, x, y, 0);
+          if(!t || t.hit === 'NONE') return JSON.stringify({hit:'NONE', cross:false});
+          var el = document.elementFromPoint(x, y) || document.body;
+          var base = {bubbles:true, cancelable:true, view:window, clientX:x, clientY:y, screenX:x, screenY:y};
+          if(window.PointerEvent){
+            try{ el.dispatchEvent(new PointerEvent('pointerover', Object.assign({}, base, {pointerId:1, pointerType:'mouse', isPrimary:true}))); }catch(e){}
+            try{ el.dispatchEvent(new PointerEvent('pointerdown', Object.assign({}, base, {pointerId:1, pointerType:'mouse', isPrimary:true, button:0, buttons:1}))); }catch(e){}
+            try{ el.dispatchEvent(new PointerEvent('pointerup', Object.assign({}, base, {pointerId:1, pointerType:'mouse', isPrimary:true, button:0, buttons:0}))); }catch(e){}
           }
-          try{ el.dispatchEvent(new w.MouseEvent('mousedown', Object.assign({}, base, {button:0, buttons:1}))); }catch(e){}
-          try{ el.dispatchEvent(new w.MouseEvent('mouseup', Object.assign({}, base, {button:0, buttons:0}))); }catch(e){}
-          try{ el.dispatchEvent(new w.MouseEvent('click', Object.assign({}, base, {button:0}))); }catch(e){}
-          return {hit:t.hit, cross:!!t.cross};
+          try{ el.dispatchEvent(new MouseEvent('mousedown', Object.assign({}, base, {button:0, buttons:1}))); }catch(e){}
+          try{ el.dispatchEvent(new MouseEvent('mouseup', Object.assign({}, base, {button:0, buttons:0}))); }catch(e){}
+          try{ el.dispatchEvent(new MouseEvent('click', Object.assign({}, base, {button:0}))); }catch(e){}
+          return JSON.stringify({hit:t.hit, cross:!!t.cross});
         })()`;
-        const r = await wv().executeJavaScript(code);
-        const hitStr = String((r && r.hit) || '');
-        const cross = r && r.cross === true;
+        const raw = await wv().executeJavaScript(code);
+        let r = {};
+        try{ r = (typeof raw === 'string') ? JSON.parse(raw) : (raw || {}); }catch(e){ r = {}; }
+        const hitStr = String(r.hit || '');
+        const cross = r.cross === true;
         if(cross || hitStr.toUpperCase().startsWith('IFRAME') || hitStr === 'NONE'){
           const cr = await window.YJAI.cdpClick({ x, y, times: 1 });
           if(cr && cr.error){ finishId(id, { ok:false, result:r, error:'CDP 回退失败: '+cr.error }); break; }

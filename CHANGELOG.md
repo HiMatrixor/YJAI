@@ -1,5 +1,14 @@
 # YJAI · AI 阅卷助手 更新日志
 
+## v1.2.7（2026-10-20）
+
+**修复：`GUEST_VIEW_MANAGER_CALL: An object could not be cloned` 根因**
+
+- 定位到真正根因：`fill-score-coord` 里递归函数 `resolve` 与 Promise 的 resolver 参数**同名遮蔽**，导致 `resolve(document, ...)` 把 `document`（DOM 对象）当作 Promise 的 resolve 值返回给主进程，DOM 对象无法跨进程克隆，触发克隆错误
+- 递归函数改名为 `descend`，避免命名冲突
+- 所有 `executeJavaScript` 的返回统一改为 `JSON.stringify` 纯字符串，彻底杜绝返回 DOM 引用导致无法克隆的问题
+- `click-coord` 同步修正，返回纯字符串
+
 ## v1.2.6（2026-10-20）
 
 **修复：跨域 iframe 点击报「An object could not be cloned」**
