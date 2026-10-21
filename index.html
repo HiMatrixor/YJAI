@@ -812,6 +812,11 @@ async function callAI(messages,{json=false}={}){
   const headers = {'Content-Type':'application/json','Authorization':'Bearer '+cfg.apiKey};
   const baseBody = { model:cfg.model, messages, temperature:0.2, max_tokens:8000 };
   let body = Object.assign({}, baseBody);
+  // DeepSeek v4 系列默认开启思考模式，reasoning_content 也计入 max_tokens，
+  // 思考会把输出额度耗尽导致 content 为空。显式关闭思考，直接输出评分结果。
+  if(/deepseek|glm|qwen|kimi|moonshot/i.test(cfg.model||'')){
+    body.thinking = { type: 'disabled' };
+  }
   if(json) body.response_format = {type:'json_object'};
   let res = await fetch(url,{method:'POST',headers:headers,body:JSON.stringify(body)});
   // 部分服务商不支持 response_format，自动降级重试
