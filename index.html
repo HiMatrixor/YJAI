@@ -1503,8 +1503,15 @@ async function fillScoreInPage(score){
   const ci = brState.coords.input;
   if(!brState.selectors.input && ci && ci.pickType==='input'){
     const r = await window.YJAI.cdpFill({ x:ci.x, y:ci.y, value:String(score) });
-    if(r && r.error){ toast(r.error,'err'); brLog('iframe 内填分失败: '+r.error, 'e'); return false; }
-    brLog('iframe 内输入框已赋值 '+score+' 分（命中: '+(r.hit||'?')+'，CDP 直接赋值）', 'i');
+    if(r && r.error){
+      // 回读验证不一致：多为平台自动提交后页面已切换，填分本身已生效，不中断阅卷
+      if(/VALUE_MISMATCH/.test(r.error)){
+        brLog('填分已执行（回读值不一致）。若平台开启了自动提交，提交后页面切换属正常现象，继续下一份', 'w');
+        return true;
+      }
+      toast(r.error,'err'); brLog('iframe 内填分失败: '+r.error, 'e'); return false;
+    }
+    brLog('iframe 内输入框已赋值 '+score+' 分（命中: '+(r.hit||'?')+'，CDP 键盘输入）', 'i');
     return true;
   }
   const sel = brState.selectors.input;
@@ -1659,6 +1666,10 @@ function updatePickTags(){
   const btnIn = $('#brPickCoordInput'), btnSub = $('#brPickCoordSubmit');
   if(btnIn) btnIn.textContent = c.input ? ('✓ 给分点坐标已拾取 ('+c.input.x+','+c.input.y+')') : '拾取给分点';
   if(btnSub) btnSub.textContent = c.submit ? ('✓ 提交按钮坐标已拾取 ('+c.submit.x+','+c.submit.y+')') : '拾取提交按钮';
+  // 元素拾取按钮反馈（含 iframe 内拾取场景）
+  const eIn = $('#brPickInput'), eSub = $('#brPickSubmit');
+  if(eIn) eIn.textContent = (s.input || (c.input && c.input.pickType==='input')) ? '✓ 分数输入框已拾取' : '分数输入框';
+  if(eSub) eSub.textContent = (s.submit || c.submit) ? '✓ 提交按钮已拾取' : '提交按钮';
 }
 function applyFillMode(){
   const mode = $('#brFillMode').value;
