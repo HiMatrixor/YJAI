@@ -337,13 +337,13 @@ ipcMain.handle('browser:cdp-fill', async (e, payload) => {
     const sid = at.sessionId;
     let result = '', hit = '';
     try {
-      const r = await wc.debugger.sendCommand('Runtime.evaluate', {
+      // 第一步：定位输入框并聚焦、清空
+      const r1 = await wc.debugger.sendCommand('Runtime.evaluate', {
         returnByValue: true,
         expression: `(function(){
           var el = document.elementFromPoint(${info.ix}, ${info.iy});
           if(!el) return JSON.stringify({r:'NONE'});
           function tagOf(e){ return e.tagName+(e.id?'#'+e.id:'')+(e.className&&typeof e.className==='string'?'.'+String(e.className).trim().split(/\\s+/).slice(0,2).join('.'):''); }
-          hit = tagOf(el);
           if(el.tagName!=='INPUT' && el.tagName!=='TEXTAREA'){
             var inner = el.querySelector('input, textarea');
             if(inner) el = inner; else return JSON.stringify({r:'NOT_INPUT', hit: tagOf(el)});
@@ -351,16 +351,31 @@ ipcMain.handle('browser:cdp-fill', async (e, payload) => {
           el.focus();
           var proto = (el.tagName==='TEXTAREA') ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
           var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-          var v = ${JSON.stringify(String(value))};
-          if(setter) setter.call(el, v); else el.value = v;
+          if(setter) setter.call(el, ''); else el.value = '';
           try{ el.dispatchEvent(new Event('input', {bubbles:true})); }catch(e){}
-          try{ el.dispatchEvent(new Event('change', {bubbles:true})); }catch(e){}
-          return JSON.stringify({r:'OK', hit: tagOf(el), value: el.value});
+          return JSON.stringify({r:'OK', hit: tagOf(el)});
         })()`
       }, sid);
-      const val = (r && r.result && r.result.value) || '';
-      try { const o = JSON.parse(val); result = o.r; hit = o.hit || ''; if(o.r==='OK' && o.value !== undefined) hit += ' (已填='+o.value+')'; }
-      catch(_) { result = val; }
+      let o1 = {};
+      try { o1 = JSON.parse((r1 && r1.result && r1.result.value) || '{}'); } catch(_) {}
+      if (o1.r !== 'OK') {
+        try { await wc.debugger.sendCommand('Target.detachFromTarget', { sessionId: sid }); } catch (_) {}
+        return { error: 'iframe 内定位输入框失败: ' + o1.r, hit: o1.hit || '' };
+      }
+      hit = o1.hit || '';
+      // 第二步：CDP 键盘输入（受信任的输入事件，React/Vue 受控组件可响应）
+      await wc.debugger.sendCommand('Input.insertText', { text: String(value) }, sid);
+      await sleepMs(150);
+      // 第三步：验证 value 是否生效
+      let finalVal = '';
+      try {
+        const r3 = await wc.debugger.sendCommand('Runtime.evaluate', {
+          returnByValue: true,
+          expression: `(function(){ var el=document.elementFromPoint(${info.ix}, ${info.iy}); if(!el) return ''; if(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){ var i=el.querySelector('input,textarea'); if(i) el=i; } return el.value; })()`
+        }, sid);
+        finalVal = (r3 && r3.result && r3.result.value) || '';
+      } catch (_) {}
+      result = (String(finalVal) === String(value)) ? 'OK' : ('VALUE_MISMATCH:实际=' + finalVal);
     } catch (err2) { result = 'EVAL_ERR:' + (err2 && err2.message || err2); }
     try { await wc.debugger.sendCommand('Target.detachFromTarget', { sessionId: sid }); } catch (_) {}
     if (result === 'OK') return { ok: true, hit };
