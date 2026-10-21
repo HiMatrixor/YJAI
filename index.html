@@ -1500,7 +1500,7 @@ async function fillScoreCoordInPage(score){
   if(!c){ toast('请先拾取给分点坐标','err'); return false; }
   const step = Number(brState.coordStep) || 1;
   const times = Math.round(Number(score) / step);
-  if(times <= 0){ toast('分数为 0，无需填分','err'); return false; }
+  if(times <= 0){ brLog('得分为 0，跳过填分，直接提交', 'i'); return true; }
   const r = await brRelay('fill-score-coord', { x:c.x, y:c.y, score:Number(score), times:times });
   if(r && r.error){ toast(r.error,'err'); brLog('坐标填分失败: '+r.error, 'e'); return false; }
   if(r && !r.ok){ toast('坐标填分未成功，请确认给分点坐标正确','err'); brLog('坐标填分未成功，命中: '+JSON.stringify(r.result||{}), 'e'); return false; }
