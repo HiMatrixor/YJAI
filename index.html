@@ -1467,6 +1467,7 @@ async function startPickCoord(target){
     brLog('已拾取'+label+': ('+r.point.x+','+r.point.y+')', 'i');
     if(r.diag) brLog('  └ 命中元素: '+r.diag, 'i');
     toast('已拾取'+label+' ('+r.point.x+','+r.point.y+')','ok');
+    if(btn){ btn.textContent = '✓ '+label+'已拾取 ('+r.point.x+','+r.point.y+')'; btn.classList.add('picked'); }
   }
 }
 async function captureAreaRaw(){
@@ -1504,7 +1505,7 @@ async function fillScoreCoordInPage(score){
   const r = await brRelay('fill-score-coord', { x:c.x, y:c.y, score:Number(score), times:times });
   if(r && r.error){ toast(r.error,'err'); brLog('坐标填分失败: '+r.error, 'e'); return false; }
   if(r && !r.ok){ toast('坐标填分未成功，请确认给分点坐标正确','err'); brLog('坐标填分未成功，命中: '+JSON.stringify(r.result||{}), 'e'); return false; }
-  if(r && r.result) brLog('连点 '+(r.result.clicked||times)+' 次，命中元素: '+r.result.hit+(r.result.mode==='cdp'?'（CDP 穿透 iframe）':'')+(r.result.target?(' → '+r.result.target):''), 'i');
+  if(r && r.result) brLog('连点 '+(r.result.clicked||times)+' 次，命中元素: '+r.result.hit+(r.result.mode==='cdp'?'（CDP 穿透 iframe）':'')+(r.result.target?(' → '+r.result.target):'')+(r.result.iframeHit?(' └ iframe 内命中: '+r.result.iframeHit):''), 'i');
   return !!(r && r.ok);
 }
 async function clickSubmitInPage(){
@@ -1521,7 +1522,7 @@ async function clickSubmitCoordInPage(){
   if(!c){ toast('请先拾取提交按钮坐标','err'); return false; }
   const r = await brRelay('click-coord', { x:c.x, y:c.y });
   if(r && r.error){ toast(r.error,'err'); brLog('提交点击失败: '+r.error, 'e'); return false; }
-  if(r && r.result) brLog('提交点击命中元素: '+(r.result.hit||r.result)+(r.result.mode==='cdp'?'（CDP 穿透 iframe）':'')+(r.result.target?(' → '+r.result.target):''), 'i');
+  if(r && r.result) brLog('提交点击命中元素: '+(r.result.hit||r.result)+(r.result.mode==='cdp'?'（CDP 穿透 iframe）':'')+(r.result.target?(' → '+r.result.target):'')+(r.result.iframeHit?(' └ iframe 内命中: '+r.result.iframeHit):''), 'i');
   return !!(r && r.ok);
 }
 async function testSubmit(){
@@ -1632,6 +1633,9 @@ function updatePickTags(){
   $('#brTagCoordSubmit').textContent = c.submit?'已拾取':'未拾取';
   $('#brTagCoordSubmit').className = 'br-tag'+(c.submit?' ok':'');
   $('#brCoordInfo').textContent = '给分点坐标：'+(c.input?('('+c.input.x+','+c.input.y+')'):'未配置')+'　提交坐标：'+(c.submit?('('+c.submit.x+','+c.submit.y+')'):'未配置');
+  const btnIn = $('#brPickCoordInput'), btnSub = $('#brPickCoordSubmit');
+  if(btnIn) btnIn.textContent = c.input ? ('✓ 给分点坐标已拾取 ('+c.input.x+','+c.input.y+')') : '拾取给分点';
+  if(btnSub) btnSub.textContent = c.submit ? ('✓ 提交按钮坐标已拾取 ('+c.submit.x+','+c.submit.y+')') : '拾取提交按钮';
 }
 function applyFillMode(){
   const mode = $('#brFillMode').value;

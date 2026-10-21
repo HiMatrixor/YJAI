@@ -195,6 +195,7 @@ ipcMain.handle('browser:cdp-click', async (e, payload) => {
   if (x == null || y == null) return { error: '缺少坐标' };
   const n = Math.max(1, Math.round(Number(times) || 1));
   let attached = false;
+  let iframeHit = '';
   try {
     if (!wc.debugger.isAttached()) { wc.debugger.attach('1.3'); attached = true; }
 
@@ -225,44 +226,56 @@ ipcMain.handle('browser:cdp-click', async (e, payload) => {
     let tx = x, ty = y, sessionId = undefined, targetDesc = 'top';
 
     if (info.cross) {
-      // 2) 跨域 iframe：找到 iframe 对应的独立 target（OOPIF）
-      const { targetInfos } = await wc.debugger.sendCommand('Target.getTargets');
-      const srcBase = String(info.src || '').split('#')[0];
-      const srcPath = srcBase.split('?')[0];
-      const cands = (targetInfos || []).filter(t => t.type === 'iframe' && t.attached !== true);
-      let best = null;
-      for (const t of cands) {
-        const u = String(t.url || '');
-        if (srcBase && (u === srcBase || u.startsWith(srcBase))) { best = t; break; }
-        if (srcPath && u.split('?')[0] === srcPath) { best = t; break; }
-      }
-      if (!best && cands.length) {
-        // 宽松匹配：url 与 src 同源（协议+主机一致）
-        try {
-          const so = new URL(srcBase).origin;
-          best = cands.find(t => { try { return new URL(t.url).origin === so; } catch (_) { return false; } });
-        } catch (_) {}
-      }
-      if (!best) return { error: '未找到 iframe 对应的渲染目标（src=' + srcBase + '），无法穿透点击' };
-      const at = await wc.debugger.sendCommand('Target.attachToTarget', { targetId: best.targetId, flatten: true });
-      sessionId = at.sessionId;
-      tx = info.ix; ty = info.iy;
-      targetDesc = 'iframe:' + (best.url || '').slice(0, 80);
+      // 2) 跨域 iframe：诊断——attach iframe target 读取局部坐标处的元素（只读，用于日志）
+      //    注意：实际点击仍在顶层 target 派发（与 Puppeteer 一致），由浏览器合成器路由进 OOPIF，
+      //    直接对 OOPIF target 派发 Input 事件会被静默丢弃（这正是"日志成功但平台无反应"的原因）
+      tx = x; ty = y; // 顶层坐标派发
+      targetDesc = 'iframe:' + String(info.src||'').slice(0, 80);
+      try {
+        const { targetInfos } = await wc.debugger.sendCommand('Target.getTargets');
+        const srcBase = String(info.src || '').split('#')[0];
+        const srcPath = srcBase.split('?')[0];
+        const cands = (targetInfos || []).filter(t => t.type === 'iframe' && t.attached !== true);
+        let best = null;
+        for (const t of cands) {
+          const u = String(t.url || '');
+          if (srcBase && (u === srcBase || u.startsWith(srcBase))) { best = t; break; }
+          if (srcPath && u.split('?')[0] === srcPath) { best = t; break; }
+        }
+        if (!best && cands.length) {
+          try {
+            const so = new URL(srcBase).origin;
+            best = cands.find(t => { try { return new URL(t.url).origin === so; } catch (_) { return false; } });
+          } catch (_) {}
+        }
+        if (best) {
+          const at = await wc.debugger.sendCommand('Target.attachToTarget', { targetId: best.targetId, flatten: true });
+          const sid = at.sessionId;
+          try {
+            const p2 = await wc.debugger.sendCommand('Runtime.evaluate', {
+              returnByValue: true,
+              expression: `(function(){ var el=document.elementFromPoint(${info.ix},${info.iy}); if(!el) return 'NONE'; return el.tagName+(el.id?'#'+el.id:'')+(el.className&&typeof el.className==='string'?'.'+String(el.className).trim().split(/\\s+/).slice(0,2).join('.'):''); })()`
+            }, sid);
+            iframeHit = (p2 && p2.result && p2.result.value) || 'UNKNOWN';
+          } catch (_) {}
+          try { await wc.debugger.sendCommand('Target.detachFromTarget', { sessionId: sid }); } catch (_) {}
+        }
+      } catch (_) {}
     }
 
-    // 3) 在目标（顶层或 iframe target）派发完整点击序列
+    // 3) 在顶层 target 派发完整点击序列（原始窗口坐标，由浏览器路由进 iframe）
     for (let i = 0; i < n; i++) {
-      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: tx, y: ty }, sessionId);
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: tx, y: ty });
       await sleepMs(25);
-      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: tx, y: ty, button: 'left', clickCount: 1, buttons: 1 }, sessionId);
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: tx, y: ty, button: 'left', clickCount: 1, buttons: 1 });
       await sleepMs(45);
-      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: tx, y: ty, button: 'left', clickCount: 1, buttons: 0 }, sessionId);
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: tx, y: ty, button: 'left', clickCount: 1, buttons: 0 });
       await sleepMs(135);
     }
     if (sessionId) {
       try { await wc.debugger.sendCommand('Target.detachFromTarget', { sessionId }); } catch (_) {}
     }
-    return { ok: true, clicked: n, target: targetDesc, local: info.cross ? { x: tx, y: ty } : null };
+    return { ok: true, clicked: n, target: targetDesc, iframeHit: iframeHit, local: info.cross ? { x: info.ix, y: info.iy } : null };
   } catch (err) {
     return { error: String(err && err.message || err) };
   } finally {
