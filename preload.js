@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('YJAI', {
   closeBrowserWindow: () => ipcRenderer.invoke('browser:close'),
   relayToBrowser: (msg) => ipcRenderer.invoke('browser:relay', msg),
   cdpClick: (payload) => ipcRenderer.invoke('browser:cdp-click', payload),
+  cdpFill: (payload) => ipcRenderer.invoke('browser:cdp-fill', payload),
 
   // —— 浏览器窗口调用 ——
   onBrowserAction: (cb) => ipcRenderer.on('browser:action', (e, msg) => cb(msg)),

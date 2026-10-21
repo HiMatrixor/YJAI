@@ -1447,6 +1447,17 @@ async function startPick(target){
     const label = { input:'分数输入框', submit:'提交按钮', meta:'元数据' }[target];
     brLog('已拾取'+label+': '+r.selector);
     toast('拾取成功: '+r.selector,'ok');
+    if(btn){ btn.textContent = '✓ '+label+'已拾取'; }
+  }
+  // 元素在跨域 iframe 内：转为「iframe 内坐标」存储，填分时走 CDP 直接赋值
+  if(r && r.type==='pick' && r.iframePick){
+    const label = { input:'分数输入框', submit:'提交按钮', meta:'元数据' }[target];
+    brState.coords[target] = { x:r.x, y:r.y, ix:r.ix, iy:r.iy, src:r.src, pickType: target==='input' ? 'input' : 'click' };
+    delete brState.selectors[target]; saveBr(); updatePickTags();
+    brLog('已拾取'+label+'（位于跨域 iframe 内）: '+r.tag+'，将通过 CDP '+(target==='input'?'直接赋值':'点击'), 'i');
+    toast('已拾取'+label+'（iframe 内）','ok');
+    if(btn){ btn.textContent = '✓ '+label+'已拾取（iframe内）'; }
+    if(target!=='input'){ brState.fillMode='coord'; const fm=$('#brFillMode'); if(fm) fm.value='coord'; }
   }
 }
 async function startPickCoord(target){
@@ -1488,6 +1499,14 @@ async function testShot(){
 }
 async function fillScoreInPage(score){
   if(brState.fillMode === 'coord') return fillScoreCoordInPage(score);
+  // 元素拾取落在跨域 iframe 内：CDP 直接对 iframe 内输入框赋值
+  const ci = brState.coords.input;
+  if(!brState.selectors.input && ci && ci.pickType==='input'){
+    const r = await window.YJAI.cdpFill({ x:ci.x, y:ci.y, value:String(score) });
+    if(r && r.error){ toast(r.error,'err'); brLog('iframe 内填分失败: '+r.error, 'e'); return false; }
+    brLog('iframe 内输入框已赋值 '+score+' 分（命中: '+(r.hit||'?')+'，CDP 直接赋值）', 'i');
+    return true;
+  }
   const sel = brState.selectors.input;
   if(!sel){ toast('请先拾取分数输入框','err'); return false; }
   const r = await brRelay('fill-score', { selector:sel, score:score });
@@ -1510,6 +1529,8 @@ async function fillScoreCoordInPage(score){
 }
 async function clickSubmitInPage(){
   if(brState.fillMode === 'coord') return clickSubmitCoordInPage();
+  // 提交按钮拾取落在跨域 iframe 内：用坐标点击（顶层 CDP 派发，由浏览器路由进 iframe）
+  if(!brState.selectors.submit && brState.coords.submit) return clickSubmitCoordInPage();
   const sel = brState.selectors.submit;
   if(!sel){ toast('请先拾取提交按钮','err'); return false; }
   const r = await brRelay('click-submit', sel);
@@ -1570,7 +1591,9 @@ async function startAuto(){
   if(brState.fillMode === 'coord'){
     if(!brState.coords.input){ toast('请先拾取给分点坐标','err'); return; }
   } else {
-    if(!brState.selectors.input || !brState.selectors.submit){ toast('请先拾取分数输入框与提交按钮','err'); return; }
+    const hasInput = brState.selectors.input || (brState.coords.input && brState.coords.input.pickType==='input');
+    const hasSubmit = brState.selectors.submit || brState.coords.submit;
+    if(!hasInput || !hasSubmit){ toast('请先拾取分数输入框与提交按钮','err'); return; }
   }
   if(!$('#brCriteria').value.trim()){ toast('请填写评分标准','err'); return; }
   const count = Number($('#brCount').value) || 10;

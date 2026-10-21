@@ -202,7 +202,8 @@ overlay.addEventListener('mouseup', async e=>{
     if(dx>6||dy>6){ toast('请单击元素而非拖动'); resetOverlay(); return; }
     try{
       const info = await pickAt(Math.round(cx), Math.round(cy));
-      if(!info || !info.selector){ toast('未识别到元素'); finish({ type:'pick', error:'未识别到元素' }); }
+      if(!info || (!info.selector && !info.iframePick)){ toast('未识别到元素'); finish({ type:'pick', error:'未识别到元素' }); }
+      else if(info.iframePick) finish({ type:'pick', target:action, iframePick:true, tag:info.tag, src:info.src, ix:info.ix, iy:info.iy, x:info.x, y:info.y });
       else finish({ type:'pick', target:action, selector:info.selector, tag:info.tag, elementType:info.type });
     }catch(err){ finish({ type:'pick', error:err.message }); }
   }
@@ -217,8 +218,14 @@ document.addEventListener('keydown', e=>{
 async function pickAt(x,y){
   const code = `(function(){
     var x=${x}, y=${y};
+    function tagOf(e){ return e.tagName+(e.id?'#'+e.id:'')+(e.className&&typeof e.className==='string'?'.'+String(e.className).trim().split(/\\s+/).slice(0,2).join('.'):''); }
     var el = document.elementFromPoint(x, y);
     if(!el) return null;
+    // 跨域 iframe：记录 iframe 内局部坐标，交由 CDP 处理（顶层 querySelector 无法到达）
+    if(el.tagName==='IFRAME' || el.tagName==='FRAME'){
+      var r = el.getBoundingClientRect();
+      return { iframePick:true, tag: tagOf(el), src: el.src||'', ix: Math.round(x-r.left), iy: Math.round(y-r.top), x: Math.round(x), y: Math.round(y) };
+    }
     var TARGETS = ['INPUT','TEXTAREA','SELECT','BUTTON','A'];
     var cur = el;
     while(cur && TARGETS.indexOf(cur.tagName) === -1) cur = cur.parentElement;

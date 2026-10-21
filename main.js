@@ -283,6 +283,95 @@ ipcMain.handle('browser:cdp-click', async (e, payload) => {
   }
 });
 
+/* ============ CDP 跨域 iframe 内输入框直接赋值 ============ */
+// 面板给分等场景：分数输入框在跨域 iframe 内，顶层 querySelector 找不到。
+// 拾取时记录 iframe 内局部坐标 (ix,iy)，此处 attach iframe target，
+// 在 iframe 内 elementFromPoint 找到输入框并用原生 setter 赋值 + 派发 input/change。
+ipcMain.handle('browser:cdp-fill', async (e, payload) => {
+  const { x, y, value } = payload || {};
+  let wc = null;
+  const guests = webContents.getAllWebContents().filter(w => !w.isDestroyed() && w.getType() === 'webview');
+  wc = guests[0] || null;
+  if (!wc || wc.isDestroyed()) return { error: '未找到浏览器页面（webview）' };
+  if (x == null || y == null) return { error: '缺少坐标' };
+  let attached = false;
+  try {
+    if (!wc.debugger.isAttached()) { wc.debugger.attach('1.3'); attached = true; }
+    // 顶层探针：定位坐标处 iframe 及局部坐标
+    const probe = await wc.debugger.sendCommand('Runtime.evaluate', {
+      returnByValue: true,
+      expression: `(function(){
+        function res(doc, cx, cy, depth){
+          var el = doc.elementFromPoint(cx, cy);
+          if(!el) return {hit:'NONE'};
+          if((el.tagName==='IFRAME'||el.tagName==='FRAME') && depth<8){
+            var r = el.getBoundingClientRect();
+            return {cross:true, ix:Math.round(cx-r.left), iy:Math.round(cy-r.top), src:el.src||''};
+          }
+          return {cross:false};
+        }
+        return res(document, ${x}, ${y}, 0);
+      })()`
+    });
+    const info = (probe && probe.result && probe.result.value) || {};
+    if (!info.cross) return { error: '目标不在 iframe 内，请用元素拾取模式' };
+    // 找 iframe target
+    const { targetInfos } = await wc.debugger.sendCommand('Target.getTargets');
+    const srcBase = String(info.src || '').split('#')[0];
+    const srcPath = srcBase.split('?')[0];
+    const cands = (targetInfos || []).filter(t => t.type === 'iframe' && t.attached !== true);
+    let best = null;
+    for (const t of cands) {
+      const u = String(t.url || '');
+      if (srcBase && (u === srcBase || u.startsWith(srcBase))) { best = t; break; }
+      if (srcPath && u.split('?')[0] === srcPath) { best = t; break; }
+    }
+    if (!best && cands.length) {
+      try {
+        const so = new URL(srcBase).origin;
+        best = cands.find(t => { try { return new URL(t.url).origin === so; } catch (_) { return false; } });
+      } catch (_) {}
+    }
+    if (!best) return { error: '未找到 iframe 对应的渲染目标（src=' + srcBase + '）' };
+    const at = await wc.debugger.sendCommand('Target.attachToTarget', { targetId: best.targetId, flatten: true });
+    const sid = at.sessionId;
+    let result = '', hit = '';
+    try {
+      const r = await wc.debugger.sendCommand('Runtime.evaluate', {
+        returnByValue: true,
+        expression: `(function(){
+          var el = document.elementFromPoint(${info.ix}, ${info.iy});
+          if(!el) return JSON.stringify({r:'NONE'});
+          function tagOf(e){ return e.tagName+(e.id?'#'+e.id:'')+(e.className&&typeof e.className==='string'?'.'+String(e.className).trim().split(/\\s+/).slice(0,2).join('.'):''); }
+          hit = tagOf(el);
+          if(el.tagName!=='INPUT' && el.tagName!=='TEXTAREA'){
+            var inner = el.querySelector('input, textarea');
+            if(inner) el = inner; else return JSON.stringify({r:'NOT_INPUT', hit: tagOf(el)});
+          }
+          el.focus();
+          var proto = (el.tagName==='TEXTAREA') ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+          var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+          var v = ${JSON.stringify(String(value))};
+          if(setter) setter.call(el, v); else el.value = v;
+          try{ el.dispatchEvent(new Event('input', {bubbles:true})); }catch(e){}
+          try{ el.dispatchEvent(new Event('change', {bubbles:true})); }catch(e){}
+          return JSON.stringify({r:'OK', hit: tagOf(el), value: el.value});
+        })()`
+      }, sid);
+      const val = (r && r.result && r.result.value) || '';
+      try { const o = JSON.parse(val); result = o.r; hit = o.hit || ''; if(o.r==='OK' && o.value !== undefined) hit += ' (已填='+o.value+')'; }
+      catch(_) { result = val; }
+    } catch (err2) { result = 'EVAL_ERR:' + (err2 && err2.message || err2); }
+    try { await wc.debugger.sendCommand('Target.detachFromTarget', { sessionId: sid }); } catch (_) {}
+    if (result === 'OK') return { ok: true, hit };
+    return { error: 'iframe 内赋值失败: ' + result, hit };
+  } catch (err) {
+    return { error: String(err && err.message || err) };
+  } finally {
+    if (attached) { try { wc.debugger.detach(); } catch (e2) { /* ignore */ } }
+  }
+});
+
 app.whenReady().then(() => {
   createWindow();
   app.on('activate', () => {
