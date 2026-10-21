@@ -836,7 +836,10 @@ async function callAI(messages,{json=false}={}){
     const finish = choice && choice.finish_reason || 'unknown';
     const dbg = JSON.stringify(data).slice(0,500);
     console.error('[callAI] 空响应原始数据:', dbg);
-    throw new Error('AI 返回为空 (finish_reason='+finish+')。响应: '+dbg);
+    const hint = (data && data.error && data.error.message) ? (' | 服务商报错: '+data.error.message) : '';
+    const detail = 'AI 返回为空 (finish_reason='+finish+')。模型='+cfg.model+hint+'。原始响应: '+dbg;
+    try{ if(typeof brLog==='function') brLog(detail, 'e'); }catch(_){}
+    throw new Error(detail);
   }
   return text;
 }
