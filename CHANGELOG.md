@@ -1,5 +1,14 @@
 # YJAI · AI 阅卷助手 更新日志
 
+## v1.2.10（2026-10-21）
+
+**修复：自动阅卷报「AI 返回为空」**
+
+- 兼容推理型模型（如 deepseek-reasoner、Qwen 思考系列）：正文为空时自动回退读取 `reasoning_content` 字段
+- `max_tokens` 从 4000 提升到 8000，避免思考过程耗尽 token 导致正文为空
+- 报错信息携带 `finish_reason` 与原始响应片段，便于快速定位模型/服务商问题
+- 提示：若使用的模型不支持视觉（图片输入），截图评分仍可能失败，请在「设置」中选用支持视觉的模型（如 gpt-4o、qwen-vl 系列、glm-4v 等）
+
 ## v1.2.9（2026-10-21）
 
 **修复：主进程弹 Error 框 "Render frame was disposed before WebFrameMain could be accessed"**

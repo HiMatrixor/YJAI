@@ -810,7 +810,7 @@ async function callAI(messages,{json=false}={}){
   if(!cfg.apiKey || !cfg.baseUrl || !cfg.model) throw new Error('请先在「设置」中配置 API Key');
   const url = cfg.baseUrl.replace(/\/+$/,'')+'/chat/completions';
   const headers = {'Content-Type':'application/json','Authorization':'Bearer '+cfg.apiKey};
-  const baseBody = { model:cfg.model, messages, temperature:0.2, max_tokens:4000 };
+  const baseBody = { model:cfg.model, messages, temperature:0.2, max_tokens:8000 };
   let body = Object.assign({}, baseBody);
   if(json) body.response_format = {type:'json_object'};
   let res = await fetch(url,{method:'POST',headers:headers,body:JSON.stringify(body)});
@@ -827,7 +827,18 @@ async function callAI(messages,{json=false}={}){
     save('usage', state.usage);
     updateTokenDisplay();
   }
-  return data.choices[0].message.content;
+  const choice = data.choices && data.choices[0];
+  const msg = choice && choice.message || {};
+  // 兼容推理型模型：思考内容在 reasoning_content，正文可能为空
+  let text = msg.content;
+  if(!text || !String(text).trim()) text = msg.reasoning_content || '';
+  if(!text || !String(text).trim()){
+    const finish = choice && choice.finish_reason || 'unknown';
+    const dbg = JSON.stringify(data).slice(0,500);
+    console.error('[callAI] 空响应原始数据:', dbg);
+    throw new Error('AI 返回为空 (finish_reason='+finish+')。响应: '+dbg);
+  }
+  return text;
 }
 /* 健壮的 JSON 解析：兼容 markdown 代码块、前后多余文本 */
 function parseAIJson(text){
