@@ -93,6 +93,7 @@
   .seg .seg-btn.active{background:var(--accent);color:#fff}
   .seg .seg-btn:hover:not(.active){color:var(--text)}
   .btn.picking{background:var(--accent);color:#fff;border-color:var(--accent);box-shadow:0 0 0 3px rgba(79,140,255,.25);animation:pulse 1s ease-in-out infinite}
+  .btn.picked{background:rgba(63,185,80,.15);color:var(--green);border-color:var(--green)}
   @keyframes pulse{0%,100%{box-shadow:0 0 0 3px rgba(79,140,255,.25)}50%{box-shadow:0 0 0 6px rgba(79,140,255,.12)}}
   .row{display:flex;gap:12px;flex-wrap:wrap}
   .row>*{flex:1;min-width:140px}
@@ -1536,6 +1537,11 @@ async function fillScoreCoordInPage(score){
 }
 async function clickSubmitInPage(){
   if(brState.fillMode === 'coord') return clickSubmitCoordInPage();
+  // 未拾取提交按钮：跳过点击，依赖平台自动提交
+  if(!brState.selectors.submit && !brState.coords.submit){
+    brLog('未拾取提交按钮，跳过提交点击（依赖平台自动提交）', 'i');
+    return true;
+  }
   // 提交按钮拾取落在跨域 iframe 内：用坐标点击（顶层 CDP 派发，由浏览器路由进 iframe）
   if(!brState.selectors.submit && brState.coords.submit) return clickSubmitCoordInPage();
   const sel = brState.selectors.submit;
@@ -1599,8 +1605,8 @@ async function startAuto(){
     if(!brState.coords.input){ toast('请先拾取给分点坐标','err'); return; }
   } else {
     const hasInput = brState.selectors.input || (brState.coords.input && brState.coords.input.pickType==='input');
-    const hasSubmit = brState.selectors.submit || brState.coords.submit;
-    if(!hasInput || !hasSubmit){ toast('请先拾取分数输入框与提交按钮','err'); return; }
+    if(!hasInput){ toast('请先拾取分数输入框','err'); return; }
+    // 提交按钮可选：未拾取时依赖平台自动提交
   }
   if(!$('#brCriteria').value.trim()){ toast('请填写评分标准','err'); return; }
   const count = Number($('#brCount').value) || 10;
@@ -1666,10 +1672,18 @@ function updatePickTags(){
   const btnIn = $('#brPickCoordInput'), btnSub = $('#brPickCoordSubmit');
   if(btnIn) btnIn.textContent = c.input ? ('✓ 给分点坐标已拾取 ('+c.input.x+','+c.input.y+')') : '拾取给分点';
   if(btnSub) btnSub.textContent = c.submit ? ('✓ 提交按钮坐标已拾取 ('+c.submit.x+','+c.submit.y+')') : '拾取提交按钮';
-  // 元素拾取按钮反馈（含 iframe 内拾取场景）
+  // 元素拾取按钮反馈（含 iframe 内拾取场景）：拾取后变绿
   const eIn = $('#brPickInput'), eSub = $('#brPickSubmit');
-  if(eIn) eIn.textContent = (s.input || (c.input && c.input.pickType==='input')) ? '✓ 分数输入框已拾取' : '分数输入框';
-  if(eSub) eSub.textContent = (s.submit || c.submit) ? '✓ 提交按钮已拾取' : '提交按钮';
+  const inOk = !!(s.input || (c.input && c.input.pickType==='input'));
+  const subOk = !!(s.submit || c.submit);
+  if(eIn){ eIn.textContent = inOk ? '✓ 分数输入框已拾取' : '分数输入框'; eIn.classList.toggle('picked', inOk); }
+  if(eSub){ eSub.textContent = subOk ? '✓ 提交按钮已拾取' : '提交按钮'; eSub.classList.toggle('picked', subOk); }
+  // 底部配置详情
+  let inDesc = s.input || '未配置';
+  if(!s.input && c.input && c.input.pickType==='input') inDesc = 'iframe内 ('+c.input.x+','+c.input.y+')';
+  let subDesc = s.submit || '未配置';
+  if(!s.submit && c.submit) subDesc = 'iframe内 ('+c.submit.x+','+c.submit.y+')';
+  $('#brSelectorInfo').textContent = '分数输入框：'+inDesc+'　提交按钮：'+subDesc+(subOk?'':'（未拾取时依赖平台自动提交）');
 }
 function applyFillMode(){
   const mode = $('#brFillMode').value;
