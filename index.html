@@ -8,6 +8,8 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
 <script defer src="https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/mhchem.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 <style>
@@ -871,7 +873,7 @@ function parseAIJson(text){
   }
   throw new Error('无法解析 AI 返回的 JSON');
 }
-/* Markdown + 数学公式渲染（marked + KaTeX） */
+/* Markdown + 数学公式渲染（marked + KaTeX + mhchem） */
 function renderMarkdownWithMath(text){
   if(!text) return '';
   const mathBlocks = [];
@@ -883,6 +885,11 @@ function renderMarkdownWithMath(text){
     mathBlocks.push({latex:latex, display:false});
     return '\u0000M'+(mathBlocks.length-1)+'\u0000';
   });
+  // 无 $ 包裹的 \ce{} 化学方程式：自动识别并渲染（化学方程式常见写法）
+  t = t.replace(/\\ce\{[^{}]*\}/g, (m) => {
+    mathBlocks.push({latex:m, display:false});
+    return '\u0000M'+(mathBlocks.length-1)+'\u0000';
+  });
   let html;
   try{
     html = window.marked ? window.marked.parse(t, {breaks:true}) : esc(t).replace(/\n/g,'<br/>');
@@ -891,7 +898,12 @@ function renderMarkdownWithMath(text){
     const ph = '\u0000M'+i+'\u0000';
     let rendered;
     try{
-      rendered = window.katex ? window.katex.renderToString(mb.latex, {displayMode: mb.display, throwOnError:false}) : esc(mb.latex);
+      if(window.katex){
+        // mhchem.min.js 加载后自动注册 \ce 等宏，renderToString 直接可用
+        rendered = window.katex.renderToString(mb.latex, {displayMode: mb.display, throwOnError:false, strict:false});
+      } else {
+        rendered = esc(mb.latex);
+      }
     }catch(e){ rendered = esc(mb.latex); }
     html = html.split(ph).join(rendered);
   });
@@ -1265,7 +1277,7 @@ async function verifyUnlockSeed(machineCode, seed){
   return normalized === expected.slice(0,16).toUpperCase();
 }
 
-let licenseState = { machineCode:'', licenseKey:'', activated:false };
+let licenseState = { machineCode:'', licenseKey:'', activated:false, activatedMachineCode:'' };
 function loadLicense(){ try{ const v = localStorage.getItem('yjai_license'); if(v){ const o = JSON.parse(v); if(o) licenseState = Object.assign(licenseState, o); } }catch(e){} }
 function saveLicense(){ try{ localStorage.setItem('yjai_license', JSON.stringify(licenseState)); }catch(e){} }
 function isLicensed(){ return !!licenseState.activated; }
@@ -1297,7 +1309,9 @@ async function initLicense(){
       const mc = await window.YJAI.getMachineId();
       licenseState.machineCode = mc;
       if(licenseState.licenseKey){
-        licenseState.activated = await verifyUnlockSeed(mc, licenseState.licenseKey);
+        // 激活码为本地派生且绑定机器码：重启时只需校验机器码一致，即可保持激活（无需每次重输）
+        // 保存的 activatedMachineCode 与当前机器码一致 → 激活有效
+        licenseState.activated = (licenseState.activatedMachineCode === mc);
       } else {
         licenseState.activated = false;
       }
@@ -1317,6 +1331,7 @@ async function activateLicense(){
     const finalKey = await deriveFinalKey(seed, mc);
     licenseState.licenseKey = finalKey;
     licenseState.activated = true;
+    licenseState.activatedMachineCode = mc;  // 记录激活时的机器码，重启时校验
     saveLicense();
     renderLicenseUI();
     initBrowser();
