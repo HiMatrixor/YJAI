@@ -349,6 +349,7 @@
             <span class="hint" style="margin:0">点一下给分点累加的分值（e卷通通常为 +1）</span>
           </div>
           <div class="hint" id="brSelectorInfo" style="margin-top:10px;font-family:'Cascadia Code',Consolas,monospace">分数输入框：未配置　提交按钮：未配置</div>
+          <div style="margin-top:6px"><button class="btn btn-ghost btn-sm" id="brClearPicks">🗑 清除拾取配置</button><span class="hint" style="margin-left:8px">平台改版或拾取错位时，清除后重新拾取</span></div>
           <div class="hint" id="brCoordInfo" style="margin-top:4px;display:none;font-family:'Cascadia Code',Consolas,monospace">给分点坐标：未配置　提交坐标：未配置</div>
         </div>
 
@@ -1539,28 +1540,38 @@ async function testShot(){
 }
 async function fillScoreInPage(score){
   if(brState.fillMode === 'coord') return fillScoreCoordInPage(score);
-  // 元素拾取落在跨域 iframe 内：CDP 直接对 iframe 内输入框赋值
-  const ci = brState.coords.input;
-  if(!brState.selectors.input && ci && ci.pickType==='input'){
-    const r = await window.YJAI.cdpFill({ x:ci.x, y:ci.y, value:String(score) });
-    if(r && r.error){
-      // 回读验证不一致：多为平台自动提交后页面已切换，填分本身已生效，不中断阅卷
-      if(/VALUE_MISMATCH/.test(r.error)){
-        brLog('填分已执行（回读值不一致）。若平台开启了自动提交，提交后页面切换属正常现象，继续下一份', 'w');
-        return true;
-      }
-      toast(r.error,'err'); brLog('iframe 内填分失败: '+r.error, 'e'); return false;
-    }
-    brLog('iframe 内输入框已赋值 '+score+' 分（命中: '+(r.hit||'?')+'，CDP 键盘输入）', 'i');
-    return true;
-  }
   const sel = brState.selectors.input;
-  if(!sel){ toast('请先拾取分数输入框','err'); return false; }
-  const r = await brRelay('fill-score', { selector:sel, score:score });
-  if(r && r.error){ toast(r.error,'err'); return false; }
-  if(r && r.result==='NOT_FOUND'){ toast('分数输入框未找到，页面可能已变化，请重新拾取','err'); brLog('分数输入框未找到（'+sel+'）','e'); return false; }
-  if(r && r.result==='NOT_INPUT'){ toast('拾取的元素不是输入框，请重新拾取分数输入框','err'); brLog('拾取的元素不是输入框（'+sel+'）','e'); return false; }
-  return !!(r && r.ok);
+  if(sel){
+    const r = await brRelay('fill-score', { selector:sel, score:score });
+    if(r && r.error){ toast(r.error,'err'); return false; }
+    if(r && r.result==='OK') return true;
+    // 顶层选择器失效（平台改版/元素已移入 iframe）：自动回退 iframe CDP 填分
+    const ci = brState.coords.input;
+    if((r && (r.result==='NOT_FOUND'||r.result==='NOT_INPUT')) && ci && ci.pickType==='input'){
+      brLog('顶层选择器已失效（'+sel+'），回退 iframe CDP 填分', 'w');
+      return fillScoreInPageIframe(score);
+    }
+    if(r && r.result==='NOT_FOUND'){ toast('分数输入框未找到，页面可能已变化，请重新拾取','err'); brLog('分数输入框未找到（'+sel+'）','e'); return false; }
+    if(r && r.result==='NOT_INPUT'){ toast('拾取的元素不是输入框，请重新拾取分数输入框','err'); brLog('拾取的元素不是输入框（'+sel+'）','e'); return false; }
+    return !!(r && r.ok);
+  }
+  return fillScoreInPageIframe(score);
+}
+async function fillScoreInPageIframe(score){
+  // iframe 内输入框：CDP 键盘输入直接赋值
+  const ci = brState.coords.input;
+  if(!ci || ci.pickType!=='input'){ toast('请先拾取分数输入框','err'); return false; }
+  const r = await window.YJAI.cdpFill({ x:ci.x, y:ci.y, value:String(score) });
+  if(r && r.error){
+    // 回读验证不一致：多为平台自动提交后页面已切换，填分本身已生效，不中断阅卷
+    if(/VALUE_MISMATCH/.test(r.error)){
+      brLog('填分已执行（回读值不一致）。若平台开启了自动提交，提交后页面切换属正常现象，继续下一份', 'w');
+      return true;
+    }
+    toast(r.error,'err'); brLog('iframe 内填分失败: '+r.error, 'e'); return false;
+  }
+  brLog('iframe 内输入框已赋值 '+score+' 分（命中: '+(r.hit||'?')+'，CDP 键盘输入）', 'i');
+  return true;
 }
 async function fillScoreCoordInPage(score){
   const c = brState.coords.input;
@@ -1759,6 +1770,12 @@ function bindBrowserEvents(){
   $('#brPickCoordInput').onclick = ()=>startPickCoord('input');
   $('#brPickCoordSubmit').onclick = ()=>startPickCoord('submit');
   $('#brTestCoord').onclick = testCoord;
+  $('#brClearPicks').onclick = ()=>{
+    if(!confirm('确定清除所有拾取配置（分数输入框、提交按钮、元数据、坐标）？清除后需重新拾取。')) return;
+    brState.selectors = {}; brState.coords = {}; saveBr(); updatePickTags();
+    brLog('已清除全部拾取配置', 'w');
+    toast('已清除拾取配置','ok');
+  };
   $('#brStart').onclick = startAuto;
   $('#brStop').onclick = ()=>{ brState.running=false; brLog('收到停止请求，将在当前题结束后停止','w'); };
   $('#brPreviewBtn').onclick = toggleBrPreview;
