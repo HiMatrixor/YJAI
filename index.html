@@ -885,11 +885,33 @@ function renderMarkdownWithMath(text){
     mathBlocks.push({latex:latex, display:false});
     return '\u0000M'+(mathBlocks.length-1)+'\u0000';
   });
-  // 无 $ 包裹的 \ce{} 化学方程式：自动识别并渲染（化学方程式常见写法）
+  // 无 $ 包裹的内嵌 \ce{} 化学命令：自动识别渲染
   t = t.replace(/\\ce\{[^{}]*\}/g, (m) => {
     mathBlocks.push({latex:m, display:false});
     return '\u0000M'+(mathBlocks.length-1)+'\u0000';
   });
+  // 裸 LaTeX 行（无 $ 定界）：参考答案常直接粘贴 \mathrm{...}\rightarrow... 等多行公式，
+  // 检测含 LaTeX 命令特征 + 数学结构符号的行，连续行合并为一个 display 公式渲染
+  const isLatexLine = (s) => {
+    if(!s || s.includes('$') || s.indexOf('\u0000M')>=0) return false;
+    const feat = /\\(mathrm|left|right|frac|dfrac|tfrac|rightarrow|leftrightarrow|longrightarrow|ce|times|cdot|sum|int|sqrt|alpha|beta|gamma|delta|epsilon|theta|lambda|mu|nu|pi|rho|sigma|tau|phi|omega|hbar|partial|nabla|infty|approx|leq|geq|neq|pm|mp|overline|underset|overset|binom|text|mathbf|mathcal|mathrm|begin|end|quad|qquad|log|ln|sin|cos|tan|lim)/.test(s);
+    return feat && /[\^_{}]/.test(s);
+  };
+  const lines = t.split('\n');
+  const out = [];
+  let i = 0;
+  while(i < lines.length){
+    const Lt = lines[i].trim();
+    if(isLatexLine(Lt)){
+      let j = i;
+      const buf = [];
+      while(j < lines.length && isLatexLine(lines[j].trim())){ buf.push(lines[j].trim()); j++; }
+      mathBlocks.push({latex: buf.join(' '), display:true});
+      out.push('\u0000M'+(mathBlocks.length-1)+'\u0000');
+      i = j;
+    } else { out.push(lines[i]); i++; }
+  }
+  t = out.join('\n');
   let html;
   try{
     html = window.marked ? window.marked.parse(t, {breaks:true}) : esc(t).replace(/\n/g,'<br/>');
@@ -904,7 +926,7 @@ function renderMarkdownWithMath(text){
       } else {
         rendered = esc(mb.latex);
       }
-    }catch(e){ rendered = esc(mb.latex); }
+    }catch(e){ rendered = '<code style="color:var(--amber)">'+esc(mb.latex)+'</code>'; }
     html = html.split(ph).join(rendered);
   });
   return html;
@@ -1451,13 +1473,14 @@ async function startPick(target){
   await window.YJAI.focusBrowserWindow();
   const btnMap = {input:'#brPickInput', submit:'#brPickSubmit', meta:'#brPickMeta'};
   const btn = $(btnMap[target]);
-  if(btn) btn.classList.add('picking');
+  const oldText = btn ? btn.textContent : '';
+  if(btn){ btn.classList.add('picking'); btn.textContent = '⏳ 拾取中…（到浏览器窗口点击目标）'; }
   brSetStatus('已跳转到浏览器窗口，请在页面中点击对应元素…');
   const r = await brRelay('start-pick', target);
   if(btn) btn.classList.remove('picking');
   brSetStatus('就绪');
-  if(r && r.error){ toast(r.error,'err'); return; }
-  if(r && r.cancel) return;
+  if(r && r.error){ toast(r.error,'err'); if(btn) btn.textContent = oldText; return; }
+  if(r && r.cancel){ if(btn) btn.textContent = oldText; return; }
   if(r && r.type==='pick' && r.selector){
     brState.selectors[target] = r.selector; saveBr(); updatePickTags();
     const label = { input:'分数输入框', submit:'提交按钮', meta:'元数据' }[target];
@@ -1481,13 +1504,14 @@ async function startPickCoord(target){
   await window.YJAI.focusBrowserWindow();
   const btnMap = { input:'#brPickCoordInput', submit:'#brPickCoordSubmit' };
   const btn = $(btnMap[target]);
-  if(btn) btn.classList.add('picking');
+  const oldText = btn ? btn.textContent : '';
+  if(btn){ btn.classList.add('picking'); btn.textContent = '⏳ 拾取中…（到浏览器窗口单击目标）'; }
   brSetStatus('已跳转到浏览器窗口，请单击给分点/提交按钮的中心位置…');
   const r = await brRelay('start-pick-coord', target);
   if(btn) btn.classList.remove('picking');
   brSetStatus('就绪');
-  if(r && r.error){ toast(r.error,'err'); return; }
-  if(r && r.cancel) return;
+  if(r && r.error){ toast(r.error,'err'); if(btn) btn.textContent = oldText; return; }
+  if(r && r.cancel){ if(btn) btn.textContent = oldText; return; }
   if(r && r.type==='coord' && r.point){
     brState.coords[target] = r.point; saveBr(); updatePickTags();
     const label = { input:'给分点坐标', submit:'提交按钮坐标' }[target];
