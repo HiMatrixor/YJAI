@@ -1498,6 +1498,12 @@ async function startPick(target){
   if(r && r.cancel){ brLog('已取消拾取', 'i'); return; }
   const label = { input:'分数输入框', submit:'提交按钮', meta:'元数据' }[target];
   if(r && r.type==='pick' && r.selector){
+    // 分数输入框目标：必须是 INPUT/TEXTAREA，否则明确报错而非静默收下
+    if(target==='input' && r.tag!=='INPUT' && r.tag!=='TEXTAREA'){
+      toast('拾取的元素不是输入框（'+r.tag+'），请点击分数输入框','err');
+      brLog('拾取的元素不是输入框: '+r.tag+' ('+r.selector+')，请重新拾取', 'e');
+      return;
+    }
     brState.selectors[target] = r.selector; updatePickTags();
     brLog('已拾取'+label+': '+r.selector, 'i');
     toast('已拾取'+label,'ok');
