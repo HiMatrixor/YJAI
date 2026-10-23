@@ -462,20 +462,41 @@ window.YJAI.onBrowserAction(async (msg)=>{
       break;
     }
     case 'click-submit': {
-      const code = `(function(){
-        var el = document.querySelector(${JSON.stringify(data||'')});
-        if(!el) return 'NOT_FOUND';
-        if(document.activeElement && document.activeElement.blur) document.activeElement.blur();
-        var rect = el.getBoundingClientRect();
-        var x = rect.left + rect.width/2, y = rect.top + rect.height/2;
-        var opts = {bubbles:true, cancelable:true, view:window, clientX:x, clientY:y, button:0};
-        el.dispatchEvent(new MouseEvent('mousedown', opts));
-        el.dispatchEvent(new MouseEvent('mouseup', opts));
-        el.dispatchEvent(new MouseEvent('click', opts));
-        return 'OK';
-      })()`;
-      const r = await wv().executeJavaScript(code);
-      finishId(id, { ok: r==='OK', result: r });
+      try {
+        // 先定位元素中心
+        const code = `(function(){
+          var el = document.querySelector(${JSON.stringify(data||'')});
+          if(!el) return null;
+          var r = el.getBoundingClientRect();
+          if(r.width<1||r.height<1) return null;
+          return { x: Math.round(r.left + r.width/2), y: Math.round(r.top + r.height/2), tag: el.tagName };
+        })()`;
+        const pos = await wv().executeJavaScript(code);
+        if(!pos || pos.x==null){ finishId(id, { ok:false, result:'NOT_FOUND' }); break; }
+        // 用 CDP 真实点击（isTrusted=true，React 组件必响应）
+        let viaCdp = false;
+        try{
+          const cr = await window.YJAI.cdpClick({ x:pos.x, y:pos.y, times:1 });
+          if(cr && !cr.error) viaCdp = true;
+          else if(cr && cr.error) finishId(id, { ok:false, error:'CDP 点击失败: '+cr.error });
+        }catch(e){ /* 回退合成事件 */ }
+        if(viaCdp){ finishId(id, { ok:true, result:'OK', via:'cdp', pos:pos }); break; }
+        // 回退：合成鼠标事件序列（含 pointer 事件，兼容性更好）
+        const r2 = await wv().executeJavaScript(`(function(){
+          var el = document.querySelector(${JSON.stringify(data||'')});
+          if(!el) return 'NOT_FOUND';
+          var rect = el.getBoundingClientRect();
+          var x = rect.left + rect.width/2, y = rect.top + rect.height/2;
+          var o = {bubbles:true, cancelable:true, view:window, clientX:x, clientY:y, button:0};
+          try{ el.dispatchEvent(new PointerEvent('pointerdown', o)); }catch(e){}
+          el.dispatchEvent(new MouseEvent('mousedown', o));
+          try{ el.dispatchEvent(new PointerEvent('pointerup', o)); }catch(e){}
+          el.dispatchEvent(new MouseEvent('mouseup', o));
+          el.dispatchEvent(new MouseEvent('click', o));
+          return 'OK';
+        })()`);
+        finishId(id, { ok: r2==='OK', result: r2, via:'synthetic' });
+      } catch(e){ finishId(id, { error:'提交点击失败: '+e.message }); }
       break;
     }
     case 'dump-dom': {
@@ -515,6 +536,69 @@ window.YJAI.onBrowserAction(async (msg)=>{
         const r = await wv().executeJavaScript(code);
         finishId(id, { result: r });
       } catch(e) { finishId(id, { error:'诊断失败: '+e.message }); }
+      break;
+    }
+    case 'auto-detect': {
+      // 自动识别平台元素：按类名/文字定位分数输入框与提交按钮（适配 ls.xiaoxianai.cn 等 React 平台）
+      try {
+        const code = `(function(){
+          function vis(el){
+            if(!el) return false;
+            var r = el.getBoundingClientRect();
+            return r.width>4 && r.height>4 && r.top>=-5 && r.left>=-5;
+          }
+          function clsOf(el){
+            return (el.className && typeof el.className==='string') ? el.className.trim().split(/\\s+/) : [];
+          }
+          function selOf(el){
+            if(!el) return null;
+            if(el.id) return '#'+CSS.escape(el.id);
+            var cs = clsOf(el);
+            for(var i=0;i<cs.length;i++){
+              if(/scoreInput/i.test(cs[i])) return el.tagName.toLowerCase()+'[class*="scoreInput"]';
+            }
+            if(cs.length) return el.tagName.toLowerCase()+'.'+CSS.escape(cs[0]);
+            return el.tagName.toLowerCase();
+          }
+          // 1) 分数输入框：优先类名含 scoreInput 的可见 input
+          var scoreEl = null;
+          var si = document.querySelectorAll('input[class*="scoreInput"]');
+          for(var a=0;a<si.length;a++){ if(vis(si[a])){ scoreEl = si[a]; break; } }
+          if(!scoreEl){
+            var all = document.querySelectorAll('input');
+            for(var b=0;b<all.length;b++){
+              var ty = (all[b].type||'text').toLowerCase();
+              if((ty==='text'||ty==='number'||ty==='') && vis(all[b])){ scoreEl = all[b]; break; }
+            }
+          }
+          // 2) 提交按钮：文字精确为「提交」的可见元素（排除包含「提交上一题下一题」的容器）
+          var submitEl = null;
+          var cands = document.querySelectorAll('div,button,a,span');
+          for(var c=0;c<cands.length;c++){
+            var t = (cands[c].textContent||'').replace(/\\s+/g,'');
+            if(t==='提交' && vis(cands[c])){ submitEl = cands[c]; break; }
+          }
+          // 3) 自动提交复选框
+          var autoEl = null;
+          var wrap = document.querySelectorAll('div');
+          for(var d=0;d<wrap.length;d++){
+            var wt = (wrap[d].textContent||'').replace(/\\s+/g,'');
+            if(wt.indexOf('自动提交')>=0 && wt.length<20){
+              var cb = wrap[d].querySelector('input[type=checkbox]');
+              if(cb){ autoEl = cb; break; }
+            }
+          }
+          return {
+            scoreInput: selOf(scoreEl),
+            submitBtn: selOf(submitEl),
+            autoSubmit: !!autoEl,
+            autoSubmitChecked: autoEl ? !!autoEl.checked : null,
+            hint: 'score='+(scoreEl?scoreEl.tagName+'.'+clsOf(scoreEl).slice(0,1).join(''):'未找到')+' submit='+(submitEl?submitEl.tagName+'.'+clsOf(submitEl).slice(0,1).join(''):'未找到')
+          };
+        })()`;
+        const r = await wv().executeJavaScript(code);
+        finishId(id, { result: r });
+      } catch(e) { finishId(id, { error:'自动识别失败: '+e.message }); }
       break;
     }
     default:

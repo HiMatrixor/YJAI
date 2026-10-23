@@ -349,7 +349,8 @@
             <span class="hint" style="margin:0">点一下给分点累加的分值（e卷通通常为 +1）</span>
           </div>
           <div class="hint" id="brSelectorInfo" style="margin-top:10px;font-family:'Cascadia Code',Consolas,monospace">分数输入框：未配置　提交按钮：未配置</div>
-          <div style="margin-top:6px"><button class="btn btn-ghost btn-sm" id="brClearPicks">🗑 清除拾取配置</button><button class="btn btn-ghost btn-sm" id="brDumpDom" style="margin-left:8px">🔍 诊断页面结构</button><span class="hint" style="margin-left:8px">拾取不到目标时，先诊断页面看元素结构</span></div>
+          <div style="margin-top:6px"><button class="btn btn-ghost btn-sm" id="brAutoDetect">🔧 自动识别元素</button><button class="btn btn-ghost btn-sm" id="brClearPicks" style="margin-left:8px">🗑 清除拾取配置</button><button class="btn btn-ghost btn-sm" id="brDumpDom" style="margin-left:8px">🔍 诊断页面结构</button></div>
+          <div class="hint" style="margin-top:6px">「自动识别元素」按页面结构自动定位分数输入框和提交按钮，无需手动点准</div>
           <div class="hint" id="brCoordInfo" style="margin-top:4px;display:none;font-family:'Cascadia Code',Consolas,monospace">给分点坐标：未配置　提交坐标：未配置</div>
         </div>
 
@@ -1791,6 +1792,21 @@ function bindBrowserEvents(){
     brState.selectors = {}; brState.coords = {}; saveBr(); updatePickTags();
     brLog('已清除全部拾取配置', 'w');
     toast('已清除拾取配置','ok');
+  };
+  $('#brAutoDetect').onclick = async ()=>{
+    brLog('正在自动识别页面元素…','i');
+    const r = await brRelay('auto-detect');
+    if(r && r.error){ brLog('自动识别失败: '+r.error,'e'); toast(r.error,'err'); return; }
+    const res = (r && r.result) || {};
+    let okAny = false;
+    if(res.scoreInput){ brState.selectors.input = res.scoreInput; okAny = true; }
+    if(res.submitBtn){ brState.selectors.submit = res.submitBtn; okAny = true; }
+    updatePickTags();
+    brLog('自动识别结果：分数输入框='+(res.scoreInput||'未找到')+'，提交按钮='+(res.submitBtn||'未找到')+'，页面「自动提交」='+(res.autoSubmit?('存在'+(res.autoSubmitChecked?'（已勾选）':'（未勾选，建议勾选）')):'未找到'), okAny?'i':'e');
+    if(okAny){ toast('已自动识别并配置','ok'); } else { toast('未识别到输入框/按钮，请用诊断查看结构','err'); }
+    if(res.autoSubmit && res.autoSubmitChecked===false){
+      brLog('提示：页面有「自动提交」但未勾选，建议勾选后无需拾取提交按钮','w');
+    }
   };
   $('#brDumpDom').onclick = async ()=>{
     brLog('正在诊断页面结构…','i');
