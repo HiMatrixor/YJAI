@@ -1794,18 +1794,45 @@ function bindBrowserEvents(){
     toast('已清除拾取配置','ok');
   };
   $('#brAutoDetect').onclick = async ()=>{
+    const btn = $('#brAutoDetect');
+    const oldText = btn ? btn.textContent : '';
+    if(btn){ btn.classList.add('picking'); btn.textContent = '⏳ 识别中…'; }
     brLog('正在自动识别页面元素…','i');
-    const r = await brRelay('auto-detect');
-    if(r && r.error){ brLog('自动识别失败: '+r.error,'e'); toast(r.error,'err'); return; }
-    const res = (r && r.result) || {};
-    let okAny = false;
-    if(res.scoreInput){ brState.selectors.input = res.scoreInput; okAny = true; }
-    if(res.submitBtn){ brState.selectors.submit = res.submitBtn; okAny = true; }
-    updatePickTags();
-    brLog('自动识别结果：分数输入框='+(res.scoreInput||'未找到')+'，提交按钮='+(res.submitBtn||'未找到')+'，页面「自动提交」='+(res.autoSubmit?('存在'+(res.autoSubmitChecked?'（已勾选）':'（未勾选，建议勾选）')):'未找到'), okAny?'i':'e');
-    if(okAny){ toast('已自动识别并配置','ok'); } else { toast('未识别到输入框/按钮，请用诊断查看结构','err'); }
-    if(res.autoSubmit && res.autoSubmitChecked===false){
-      brLog('提示：页面有「自动提交」但未勾选，建议勾选后无需拾取提交按钮','w');
+    try{
+      const code = `(function(){
+        function vis(e){ if(!e) return false; var r=e.getBoundingClientRect(); return r.width>4 && r.height>4 && r.top>=-5 && r.left>=-5; }
+        function fc(e){ var c=e.className; if(typeof c!=='string') return ''; var a=c.trim().split(/\\s+/); return a[0]||''; }
+        function sel(e){
+          if(!e) return null;
+          if(e.id) return '#'+e.id;
+          var c=fc(e);
+          if(/scoreInput/i.test(c)) return 'input[class*="scoreInput"]';
+          return e.tagName.toLowerCase()+(c?'.'+c:'');
+        }
+        var score=null, si=document.querySelectorAll('input[class*="scoreInput"]');
+        for(var i=0;i<si.length;i++){ if(vis(si[i])){ score=si[i]; break; } }
+        if(!score){ var ai=document.querySelectorAll('input'); for(var j=0;j<ai.length;j++){ var t=(ai[j].type||'text').toLowerCase(); if((t==='text'||t==='number')&&vis(ai[j])){ score=ai[j]; break; } } }
+        var sub=null, cs=document.querySelectorAll('div,button,span,a');
+        for(var k=0;k<cs.length;k++){ var tx=(cs[k].textContent||'').replace(/\\s+/g,''); if(tx==='提交'&&vis(cs[k])){ sub=cs[k]; break; } }
+        return JSON.stringify({ scoreInput:sel(score), submitBtn:sel(sub), scoreTag:score?score.tagName:'', scoreCls:score?fc(score):'', subTag:sub?sub.tagName:'', subCls:sub?fc(sub):'' });
+      })()`;
+      const r = await Promise.race([
+        brRelay('execute', code),
+        new Promise(res=>setTimeout(()=>res({error:'识别超时（8秒未响应），请确认浏览器窗口已打开'}), 8000))
+      ]);
+      if(r && r.error){ brLog('自动识别失败: '+r.error,'e'); toast(r.error,'err'); return; }
+      let res = {};
+      try{ res = JSON.parse((r && r.result) || '{}'); }catch(e){ res = {}; }
+      let okAny = false;
+      if(res.scoreInput){ brState.selectors.input = res.scoreInput; okAny = true; }
+      if(res.submitBtn){ brState.selectors.submit = res.submitBtn; okAny = true; }
+      updatePickTags();
+      brLog('自动识别结果：分数输入框='+(res.scoreInput||'未找到')+'，提交按钮='+(res.submitBtn||'未找到'), okAny?'i':'e');
+      toast(okAny?'已自动识别并配置':'未识别到，请用诊断查看结构', okAny?'ok':'err');
+    }catch(e){
+      brLog('自动识别异常: '+e.message,'e');
+    }finally{
+      if(btn){ btn.classList.remove('picking'); btn.textContent = oldText || '🔧 自动识别元素'; }
     }
   };
   $('#brDumpDom').onclick = async ()=>{
