@@ -166,7 +166,7 @@ ipcMain.handle('browser:relay', (e, msg) => {
     const handler = (ev, res) => {
       if (ev.sender === bw.webContents && res && res.id === id) finish(res.result);
     };
-    const timer = setTimeout(() => finish({ error: '操作超时' }), 120000);
+    const timer = setTimeout(() => finish({ error: '操作超时（20秒未响应，请确认浏览器窗口已打开并在浏览器窗口内点击目标）' }), 20000);
     ipcMain.on('browser:result', handler);
     bw.webContents.send('browser:action', { id, action: msg.action, data: msg.data });
   });

@@ -707,6 +707,19 @@
 <div class="toast" id="toast"></div>
 <div class="token-badge" id="tokenBadge" title="累计 Token 消耗统计">⚡ 输入 <b id="tkIn">0</b> · 输出 <b id="tkOut">0</b></div>
 
+<!-- 通用输入/确认弹窗（替代 sandbox 下失效的原生 prompt/confirm） -->
+<div class="modal-mask" id="uiModal">
+  <div class="modal">
+    <h3 id="uiModalTitle">提示</h3>
+    <div id="uiModalBody" style="margin-bottom:12px;color:var(--muted);font-size:13px;white-space:pre-wrap;word-break:break-word"></div>
+    <textarea id="uiModalInput" style="min-height:120px;display:none" placeholder=""></textarea>
+    <div class="row end" style="margin-top:14px">
+      <button class="btn btn-ghost" id="uiModalCancel">取消</button>
+      <button class="btn btn-primary" id="uiModalOk">确定</button>
+    </div>
+  </div>
+</div>
+
 <script>
 /* ================= 常量与状态 ================= */
 const SUBJECTS = ['语文','数学','英语','物理','化学','生物','历史','地理','政治','信息','其他'];
@@ -1058,8 +1071,8 @@ function bindStudents(){
     }
   });
 }
-function batchPaste(){
-  const txt=prompt('请粘贴学生答案，每位学生一份，用「====」或空行分隔：\n\n例如：\n张三的答案内容\n====\n李四的答案内容');
+async function batchPaste(){
+  const txt=await uiPrompt('请粘贴学生答案，每位学生一份，用「====」或空行分隔：\n\n例如：\n张三的答案内容\n====\n李四的答案内容', '', true);
   if(txt==null) return;
   const parts=txt.split(/\n\s*={2,}\s*\n|\n\s*\n/).map(s=>s.trim()).filter(Boolean);
   if(!parts.length){toast('未识别到有效内容','err');return;}
@@ -1614,7 +1627,7 @@ async function clickSubmitCoordInPage(){
   return !!(r && r.ok);
 }
 async function testSubmit(){
-  const score = prompt('请输入测试分数（例如 5）','5');
+  const score = await uiPrompt('请输入测试分数（例如 5）', '5');
   if(score==null) return;
   if(!/^\d+(\.\d+)?$/.test(score)){ toast('请输入有效数字','err'); return; }
   const ok = await fillScoreInPage(score);
@@ -1624,7 +1637,7 @@ async function testSubmit(){
   toast(ok2?'测试提交成功，请到浏览器窗口确认':'提交按钮未找到，请重新拾取', ok2?'ok':'err');
 }
 async function testCoord(){
-  const score = prompt('请输入测试分数（例如 5）','5');
+  const score = await uiPrompt('请输入测试分数（例如 5）', '5');
   if(score==null) return;
   if(!/^\d+(\.\d+)?$/.test(score)){ toast('请输入有效数字','err'); return; }
   const ok = await fillScoreCoordInPage(score);
@@ -1775,7 +1788,6 @@ function bindBrowserEvents(){
   $('#brPickCoordSubmit').onclick = ()=>startPickCoord('submit');
   $('#brTestCoord').onclick = testCoord;
   $('#brClearPicks').onclick = ()=>{
-    if(!confirm('确定清除所有拾取配置（分数输入框、提交按钮、元数据、坐标）？清除后需重新拾取。')) return;
     brState.selectors = {}; brState.coords = {}; saveBr(); updatePickTags();
     brLog('已清除全部拾取配置', 'w');
     toast('已清除拾取配置','ok');
@@ -2012,10 +2024,10 @@ function exportExamMd(){
   });
   download((examState.title||'YJAI')+'整卷成绩.md',md,'text/markdown');
 }
-function pasteExamBatch(){
+async function pasteExamBatch(){
   const q=examState.questions;
   if(!q.length){toast('请先添加题目','err');return;}
-  const txt=prompt('批量导入学生答卷格式：\n每位学生一个块，用「====」分隔；第一行为姓名，后续每行按题号顺序对应一道题的答案。\n\n例如：\n张三\n第一题答案\n第二题答案\n====\n李四\n第一题答案\n第二题答案');
+  const txt=await uiPrompt('批量导入学生答卷格式：\n每位学生一个块，用「====」分隔；第一行为姓名，后续每行按题号顺序对应一道题的答案。\n\n例如：\n张三\n第一题答案\n第二题答案\n====\n李四\n第一题答案\n第二题答案', '', true);
   if(txt==null) return;
   const blocks=txt.split(/\n\s*={2,}\s*\n/).map(s=>s.trim()).filter(Boolean);
   if(!blocks.length){toast('未识别到有效内容','err');return;}
@@ -2329,8 +2341,8 @@ function bindEvents(){
   $$('.preset button').forEach(b=>b.onclick=()=>{
     const p=PRESETS[b.dataset.preset];$('#setBaseUrl').value=p.base;$('#setModel').value=p.model;toast('已填入 '+b.textContent+' 配置，请补充 API Key','ok');
   });
-  $('#btnClearRecords').onclick=()=>{
-    if(confirm('确定清空所有阅卷记录吗？此操作不可恢复。')){state.records=[];save('records',[]);renderAnalysis();toast('已清空','ok');}
+  $('#btnClearRecords').onclick=async()=>{
+    if(await uiConfirm('确定清空所有阅卷记录吗？此操作不可恢复。')){state.records=[];save('records',[]);renderAnalysis();toast('已清空','ok');}
   };
   $('#btnCheckUpdate').onclick=async()=>{ $('#updateStatus').textContent='正在检查更新…'; $('#updateStatus').style.color='var(--muted)'; if(window.YJAI&&YJAI.checkUpdate){ const r=await YJAI.checkUpdate(); if(r&&r.error) updateStatusText('❌ '+r.error); } };
   $('#btnDownloadUpdate').onclick=async()=>{ $('#updateStatus').textContent='开始下载更新…'; $('#updateStatus').style.color='var(--muted)'; if(window.YJAI&&YJAI.downloadUpdate){ const r=await YJAI.downloadUpdate(); if(r&&r.error) updateStatusText('❌ '+r.error); } };
@@ -2340,7 +2352,7 @@ function bindEvents(){
     const act=b.dataset.act,id=b.dataset.tpl;
     if(act==='load'){applyTemplate(id);switchView('grade');}
     else if(act==='edit'){openTplModal(id);}
-    else if(act==='del'){if(confirm('删除该模板？')){state.templates=state.templates.filter(x=>x.id!==id);save('templates',state.templates);renderTemplates();}}
+    else if(act==='del'){ uiConfirm('删除该模板？').then(ok=>{ if(ok){ state.templates=state.templates.filter(x=>x.id!==id); save('templates',state.templates); renderTemplates(); } }); }
   });
   $('#gradeTemplate').addEventListener('change',e=>{if(e.target.value)applyTemplate(e.target.value);});
   $('#tplModal').addEventListener('click',e=>{if(e.target===e.target.closest('.modal-mask'))$('#tplModal').classList.remove('show');});
@@ -2401,6 +2413,40 @@ function initUpdater(){
 }
 
 /* ================= 启动 ================= */
+// 通用弹窗（替代 sandbox 下失效的原生 prompt/confirm）
+function uiPrompt(title, def, multiline){
+  return new Promise((resolve)=>{
+    const m = $('#uiModal');
+    $('#uiModalTitle').textContent = title || '请输入';
+    $('#uiModalBody').style.display = 'none';
+    const inp = $('#uiModalInput');
+    inp.style.display = '';
+    inp.value = def || '';
+    inp.placeholder = '';
+    m.classList.add('show');
+    const ok = ()=>{ m.classList.remove('show'); resolve(inp.value); };
+    const cancel = ()=>{ m.classList.remove('show'); resolve(null); };
+    $('#uiModalOk').onclick = ok;
+    $('#uiModalCancel').onclick = cancel;
+    $('#uiModalCancel').style.display = '';
+    setTimeout(()=>inp.focus(), 50);
+  });
+}
+function uiConfirm(msg){
+  return new Promise((resolve)=>{
+    const m = $('#uiModal');
+    $('#uiModalTitle').textContent = '确认操作';
+    const body = $('#uiModalBody');
+    body.textContent = msg || '确定执行此操作吗？';
+    body.style.display = '';
+    $('#uiModalInput').style.display = 'none';
+    m.classList.add('show');
+    $('#uiModalOk').onclick = ()=>{ m.classList.remove('show'); resolve(true); };
+    $('#uiModalCancel').onclick = ()=>{ m.classList.remove('show'); resolve(false); };
+    $('#uiModalCancel').style.display = '';
+  });
+}
+
 async function init(){
   applyTheme(loadTheme());
   loadState();
