@@ -1489,7 +1489,9 @@ async function startPick(target){
   const btn = $(btnMap[target]);
   if(btn) btn.classList.add('picking');
   brSetStatus('已跳转到浏览器窗口，请在页面中点击对应元素…');
+  brLog('开始拾取，请到浏览器窗口点击目标（10 秒内）', 'i');
   const r = await brRelay('start-pick', target);
+  brLog('拾取返回: '+(r ? JSON.stringify(r).slice(0,300) : '空'), 'i');
   if(btn) btn.classList.remove('picking');
   brSetStatus('就绪');
   if(r && r.error){ toast(r.error,'err'); brLog('拾取失败: '+r.error, 'e'); return; }
@@ -1516,7 +1518,9 @@ async function startPickCoord(target){
   const btn = $(btnMap[target]);
   if(btn) btn.classList.add('picking');
   brSetStatus('已跳转到浏览器窗口，请单击给分点/提交按钮的中心位置…');
+  brLog('开始拾取坐标，请到浏览器窗口单击目标（10 秒内）', 'i');
   const r = await brRelay('start-pick-coord', target);
+  brLog('拾取返回: '+(r ? JSON.stringify(r).slice(0,300) : '空'), 'i');
   if(btn) btn.classList.remove('picking');
   brSetStatus('就绪');
   if(r && r.error){ toast(r.error,'err'); brLog('拾取失败: '+r.error, 'e'); return; }
