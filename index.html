@@ -349,7 +349,7 @@
             <span class="hint" style="margin:0">点一下给分点累加的分值（e卷通通常为 +1）</span>
           </div>
           <div class="hint" id="brSelectorInfo" style="margin-top:10px;font-family:'Cascadia Code',Consolas,monospace">分数输入框：未配置　提交按钮：未配置</div>
-          <div style="margin-top:6px"><button class="btn btn-ghost btn-sm" id="brClearPicks">🗑 清除拾取配置</button><span class="hint" style="margin-left:8px">平台改版或拾取错位时，清除后重新拾取</span></div>
+          <div style="margin-top:6px"><button class="btn btn-ghost btn-sm" id="brClearPicks">🗑 清除拾取配置</button><button class="btn btn-ghost btn-sm" id="brDumpDom" style="margin-left:8px">🔍 诊断页面结构</button><span class="hint" style="margin-left:8px">拾取不到目标时，先诊断页面看元素结构</span></div>
           <div class="hint" id="brCoordInfo" style="margin-top:4px;display:none;font-family:'Cascadia Code',Consolas,monospace">给分点坐标：未配置　提交坐标：未配置</div>
         </div>
 
@@ -1791,6 +1791,12 @@ function bindBrowserEvents(){
     brState.selectors = {}; brState.coords = {}; saveBr(); updatePickTags();
     brLog('已清除全部拾取配置', 'w');
     toast('已清除拾取配置','ok');
+  };
+  $('#brDumpDom').onclick = async ()=>{
+    brLog('正在诊断页面结构…','i');
+    const r = await brRelay('dump-dom');
+    if(r && r.error){ brLog('诊断失败: '+r.error,'e'); return; }
+    brLog('=== 页面候选元素 ===\n'+((r&&r.result)||'无结果'), 'i');
   };
   $('#brStart').onclick = startAuto;
   $('#brStop').onclick = ()=>{ brState.running=false; brLog('收到停止请求，将在当前题结束后停止','w'); };

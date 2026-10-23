@@ -478,6 +478,45 @@ window.YJAI.onBrowserAction(async (msg)=>{
       finishId(id, { ok: r==='OK', result: r });
       break;
     }
+    case 'dump-dom': {
+      // 诊断：输出页面中可能的输入框/按钮/给分元素（含位置尺寸），用于适配未知平台结构
+      try {
+        const code = `(function(){
+          var out = [];
+          var all = document.querySelectorAll('*');
+          for(var i=0;i<all.length && out.length<120;i++){
+            var el = all[i];
+            if(!el.tagName) continue;
+            var tag = el.tagName;
+            var cls = (el.className && typeof el.className==='string') ? el.className.trim() : '';
+            var txt = (el.textContent||'').replace(/\\s+/g,' ').trim().slice(0,20);
+            var cand = /^(INPUT|BUTTON|SELECT|TEXTAREA)$/.test(tag)
+              || /(score|submit|btn|button|mark|point|fen|grade|input|num|key)/i.test(cls)
+              || /(提交|给分|得分|评分|确认|保存|满分|下一步)/.test(txt);
+            if(!cand) continue;
+            var rc = el.getBoundingClientRect();
+            if(rc.width<4 || rc.height<4) continue;
+            out.push(tag + (el.id?'#'+el.id:'') + (cls?'.'+cls.split(/\\s+/).slice(0,2).join('.'):'')
+              + ' ['+Math.round(rc.left)+','+Math.round(rc.top)+' '+Math.round(rc.width)+'x'+Math.round(rc.height)+']'
+              + (txt?' "'+txt+'"':''));
+          }
+          // iframe 情况一并说明
+          var ifs = document.querySelectorAll('iframe');
+          var iinfo = '';
+          if(ifs.length){
+            iinfo = '\\n--- iframe('+ifs.length+') ---\\n';
+            for(var j=0;j<ifs.length;j++){
+              var f = ifs[j], fr = f.getBoundingClientRect();
+              iinfo += 'IFRAME '+(f.id?'#'+f.id:'')+' src='+(f.src||'').slice(0,120)+' ['+Math.round(fr.left)+','+Math.round(fr.top)+' '+Math.round(fr.width)+'x'+Math.round(fr.height)+']\\n';
+            }
+          }
+          return (out.length? out.join('\\n') : '（未找到候选元素）') + iinfo;
+        })()`;
+        const r = await wv().executeJavaScript(code);
+        finishId(id, { result: r });
+      } catch(e) { finishId(id, { error:'诊断失败: '+e.message }); }
+      break;
+    }
     default:
       finishId(id, { error:'未知动作 '+act });
   }
