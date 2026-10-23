@@ -1415,7 +1415,7 @@ const IS_DESKTOP = !!(window.YJAI && window.YJAI.isDesktop);
 let brState = { engine:'edge', area:null, selectors:{input:'',submit:'',meta:''}, coords:{input:null,submit:null}, fillMode:'element', coordStep:1, running:false, done:0, sum:0, lastResult:null };
 let browserReady = false;
 function saveBr(){ try{localStorage.setItem('yjai_br',JSON.stringify({engine:brState.engine,area:brState.area,selectors:brState.selectors,coords:brState.coords,fillMode:brState.fillMode,coordStep:brState.coordStep}));}catch(e){} }
-function loadBr(){ try{const v=localStorage.getItem('yjai_br');if(v){const o=JSON.parse(v);if(o){if(o.engine)brState.engine=o.engine;if(o.area)brState.area=o.area;if(o.selectors)brState.selectors=o.selectors;if(o.coords)brState.coords=o.coords;if(o.fillMode)brState.fillMode=o.fillMode;if(o.coordStep)brState.coordStep=o.coordStep;}}}catch(e){} }
+function loadBr(){ try{const v=localStorage.getItem('yjai_br');if(v){const o=JSON.parse(v);if(o){if(o.engine)brState.engine=o.engine;if(o.area)brState.area=o.area;if(o.fillMode)brState.fillMode=o.fillMode;if(o.coordStep)brState.coordStep=o.coordStep;}}}catch(e){} }
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function brLog(msg,cls){ const el=$('#brLog'); const d=document.createElement('div'); d.className=cls||'i'; d.textContent='['+new Date().toLocaleTimeString('zh-CN')+'] '+msg; el.appendChild(d); el.scrollTop=el.scrollHeight; }
 function brSetStatus(t){ const el=$('#brStatus'); el.innerHTML='<span>'+esc(t)+'</span>'; }
@@ -1487,57 +1487,47 @@ async function startPick(target){
   await window.YJAI.focusBrowserWindow();
   const btnMap = {input:'#brPickInput', submit:'#brPickSubmit', meta:'#brPickMeta'};
   const btn = $(btnMap[target]);
-  const oldText = btn ? btn.textContent : '';
-  if(btn){ btn.classList.add('picking'); btn.textContent = '⏳ 拾取中…（到浏览器窗口点击目标）'; }
+  if(btn) btn.classList.add('picking');
   brSetStatus('已跳转到浏览器窗口，请在页面中点击对应元素…');
   const r = await brRelay('start-pick', target);
   if(btn) btn.classList.remove('picking');
   brSetStatus('就绪');
-  if(r && r.error){ toast(r.error,'err'); if(btn) btn.textContent = oldText; return; }
-  if(r && r.cancel){ if(btn) btn.textContent = oldText; return; }
+  if(r && r.error){ toast(r.error,'err'); brLog('拾取失败: '+r.error, 'e'); return; }
+  if(r && r.cancel){ brLog('已取消拾取', 'i'); return; }
+  const label = { input:'分数输入框', submit:'提交按钮', meta:'元数据' }[target];
   if(r && r.type==='pick' && r.selector){
-    brState.selectors[target] = r.selector; saveBr(); updatePickTags();
-    const label = { input:'分数输入框', submit:'提交按钮', meta:'元数据' }[target];
-    brLog('已拾取'+label+': '+r.selector);
-    toast('拾取成功: '+r.selector,'ok');
-    if(btn){ btn.textContent = '✓ '+label+'已拾取'; }
+    brState.selectors[target] = r.selector; updatePickTags();
+    brLog('已拾取'+label+': '+r.selector, 'i');
+    toast('已拾取'+label,'ok');
   }
   // 元素在跨域 iframe 内：转为「iframe 内坐标」存储，填分时走 CDP 直接赋值
   if(r && r.type==='pick' && r.iframePick){
-    const label = { input:'分数输入框', submit:'提交按钮', meta:'元数据' }[target];
     brState.coords[target] = { x:r.x, y:r.y, ix:r.ix, iy:r.iy, src:r.src, pickType: target==='input' ? 'input' : 'click' };
-    delete brState.selectors[target]; saveBr(); updatePickTags();
-    brLog('已拾取'+label+'（位于跨域 iframe 内）: '+r.tag+'，将通过 CDP '+(target==='input'?'直接赋值':'点击'), 'i');
+    delete brState.selectors[target]; updatePickTags();
+    brLog('已拾取'+label+'（位于跨域 iframe 内）: '+r.tag, 'i');
     toast('已拾取'+label+'（iframe 内）','ok');
-    if(btn){ btn.textContent = '✓ '+label+'已拾取（iframe内）'; }
     if(target!=='input'){ brState.fillMode='coord'; const fm=$('#brFillMode'); if(fm) fm.value='coord'; }
   }
-  // 兜底：若返回异常结果（非 pick/iframePick/cancel/error），恢复按钮文字，避免卡在「拾取中」
-  if(btn && btn.textContent.indexOf('⏳') >= 0){ btn.textContent = oldText; }
 }
 async function startPickCoord(target){
   if(!IS_DESKTOP) return;
   await window.YJAI.focusBrowserWindow();
   const btnMap = { input:'#brPickCoordInput', submit:'#brPickCoordSubmit' };
   const btn = $(btnMap[target]);
-  const oldText = btn ? btn.textContent : '';
-  if(btn){ btn.classList.add('picking'); btn.textContent = '⏳ 拾取中…（到浏览器窗口单击目标）'; }
+  if(btn) btn.classList.add('picking');
   brSetStatus('已跳转到浏览器窗口，请单击给分点/提交按钮的中心位置…');
   const r = await brRelay('start-pick-coord', target);
   if(btn) btn.classList.remove('picking');
   brSetStatus('就绪');
-  if(r && r.error){ toast(r.error,'err'); if(btn) btn.textContent = oldText; return; }
-  if(r && r.cancel){ if(btn) btn.textContent = oldText; return; }
+  if(r && r.error){ toast(r.error,'err'); brLog('拾取失败: '+r.error, 'e'); return; }
+  if(r && r.cancel){ brLog('已取消拾取', 'i'); return; }
   if(r && r.type==='coord' && r.point){
-    brState.coords[target] = r.point; saveBr(); updatePickTags();
+    brState.coords[target] = r.point; updatePickTags();
     const label = { input:'给分点坐标', submit:'提交按钮坐标' }[target];
     brLog('已拾取'+label+': ('+r.point.x+','+r.point.y+')', 'i');
     if(r.diag) brLog('  └ 命中元素: '+r.diag, 'i');
     toast('已拾取'+label+' ('+r.point.x+','+r.point.y+')','ok');
-    if(btn){ btn.textContent = '✓ '+label+'已拾取 ('+r.point.x+','+r.point.y+')'; btn.classList.add('picked'); }
   }
-  // 兜底：恢复按钮文字，避免卡在「拾取中」
-  if(btn && btn.textContent.indexOf('⏳') >= 0){ btn.textContent = oldText; }
 }
 async function captureAreaRaw(){
   const a = brState.area;
