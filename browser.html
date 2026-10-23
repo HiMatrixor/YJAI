@@ -162,11 +162,11 @@ overlay.addEventListener('mouseup', async e=>{
   const dx=Math.abs(cx-drag.sx), dy=Math.abs(cy-drag.sy);
   if(action==='area'){
     const x=Math.min(drag.sx,cx), y=Math.min(drag.sy,cy);
-    if(dx<5||dy<5){ toast('框选区域太小'); resetOverlay(); return; }
+    if(dx<5||dy<5){ toast('框选区域太小'); finish({ cancel:true }); return; }
     const area = { x:Math.round(x), y:Math.round(y), w:Math.round(dx), h:Math.round(dy) };
     finish({ type:'area', area });
   } else if(action==='coord'){
-    if(dx>6||dy>6){ toast('请单击坐标位置而非拖动'); resetOverlay(); return; }
+    // 单击拾取：直接用鼠标释放位置，无需拖动阈值判断（鼠标微动不应导致失败）
     const point = { x:Math.round(cx), y:Math.round(cy) };
     // 诊断：命中元素 + 是否在 iframe 内（用于定位坐标/iframe 问题）
     let diag = '';
@@ -199,7 +199,6 @@ overlay.addEventListener('mouseup', async e=>{
     }catch(err){ diag = '诊断失败:'+err.message; }
     finish({ type:'coord', target:coordTarget, point, diag });
   } else if(action==='input'||action==='submit'||action==='meta'){
-    if(dx>6||dy>6){ toast('请单击元素而非拖动'); resetOverlay(); return; }
     try{
       const info = await pickAt(Math.round(cx), Math.round(cy));
       if(!info || (!info.selector && !info.iframePick)){ toast('未识别到元素'); finish({ type:'pick', error:'未识别到元素' }); }

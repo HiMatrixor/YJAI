@@ -1499,6 +1499,8 @@ async function startPick(target){
     if(btn){ btn.textContent = '✓ '+label+'已拾取（iframe内）'; }
     if(target!=='input'){ brState.fillMode='coord'; const fm=$('#brFillMode'); if(fm) fm.value='coord'; }
   }
+  // 兜底：若返回异常结果（非 pick/iframePick/cancel/error），恢复按钮文字，避免卡在「拾取中」
+  if(btn && btn.textContent.indexOf('⏳') >= 0){ btn.textContent = oldText; }
 }
 async function startPickCoord(target){
   if(!IS_DESKTOP) return;
@@ -1521,6 +1523,8 @@ async function startPickCoord(target){
     toast('已拾取'+label+' ('+r.point.x+','+r.point.y+')','ok');
     if(btn){ btn.textContent = '✓ '+label+'已拾取 ('+r.point.x+','+r.point.y+')'; btn.classList.add('picked'); }
   }
+  // 兜底：恢复按钮文字，避免卡在「拾取中」
+  if(btn && btn.textContent.indexOf('⏳') >= 0){ btn.textContent = oldText; }
 }
 async function captureAreaRaw(){
   const a = brState.area;
