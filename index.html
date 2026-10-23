@@ -764,7 +764,7 @@ const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
 function esc(s){return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-function toast(msg,type=''){const t=$('#toast');t.textContent=msg;t.className='toast show '+type;clearTimeout(t._t);t._t=setTimeout(()=>t.className='toast',2600);}
+function toast(msg,type=''){const t=$('#toast');if(!t){console.log('[toast]',msg);return;}t.textContent=msg;t.className='toast show '+type;clearTimeout(t._t);t._t=setTimeout(()=>t.className='toast',2600);}
 function save(k,v){try{localStorage.setItem('yjai_'+k,JSON.stringify(v));}catch(e){toast('存储失败：'+e.message,'err');}}
 function load(k,d){try{const v=localStorage.getItem('yjai_'+k);return v?JSON.parse(v):d;}catch(e){return d;}}
 function loadTheme(){ try{return localStorage.getItem('yjai_theme')||'dark';}catch(e){return 'dark';} }
@@ -1723,23 +1723,26 @@ function updateMonitor(){
   $('#brMLast').textContent = brState.lastResult ? (brState.lastResult.score+' 分') : '—';
 }
 function updatePickTags(){
-  const s = brState.selectors;
-  const c = brState.coords;
-  $('#brTagInput').textContent = s.input?'已拾取':'未拾取';
-  $('#brTagInput').className = 'br-tag'+(s.input?' ok':'');
-  $('#brTagSubmit').textContent = s.submit?'已拾取':'未拾取';
-  $('#brTagSubmit').className = 'br-tag'+(s.submit?' ok':'');
-  $('#brTagMeta').textContent = s.meta?'已拾取':'未拾取';
-  $('#brTagMeta').className = 'br-tag'+(s.meta?' ok':'');
-  $('#brSelectorInfo').textContent = '分数输入框：'+(s.input||'未配置')+'　提交按钮：'+(s.submit||'未配置');
-  $('#brTagCoordInput').textContent = c.input?'已拾取':'未拾取';
-  $('#brTagCoordInput').className = 'br-tag'+(c.input?' ok':'');
-  $('#brTagCoordSubmit').textContent = c.submit?'已拾取':'未拾取';
-  $('#brTagCoordSubmit').className = 'br-tag'+(c.submit?' ok':'');
-  $('#brCoordInfo').textContent = '给分点坐标：'+(c.input?('('+c.input.x+','+c.input.y+')'):'未配置')+'　提交坐标：'+(c.submit?('('+c.submit.x+','+c.submit.y+')'):'未配置');
+  const s = brState.selectors || {};
+  const c = brState.coords || {};
+  // 统一安全赋值：元素可能因视图未就绪而不存在，避免 null.textContent 报错
+  const setTag = (id, ok)=>{
+    const el = $('#'+id);
+    if(!el) return;
+    el.textContent = ok ? '已拾取' : '未拾取';
+    el.className = 'br-tag' + (ok ? ' ok' : '');
+  };
+  setTag('brTagInput', s.input);
+  setTag('brTagSubmit', s.submit);
+  setTag('brTagMeta', s.meta);
+  setTag('brTagCoordInput', c.input);
+  setTag('brTagCoordSubmit', c.submit);
+  const setTxt = (id, txt)=>{ const el=$('#'+id); if(el) el.textContent = txt; };
+  setTxt('brSelectorInfo', '分数输入框：'+(s.input||'未配置')+'　提交按钮：'+(s.submit||'未配置'));
+  setTxt('brCoordInfo', '给分点坐标：'+(c.input?('('+c.input.x+','+c.input.y+')'):'未配置')+'　提交坐标：'+(c.submit?('('+c.submit.x+','+c.submit.y+')'):'未配置'));
   const btnIn = $('#brPickCoordInput'), btnSub = $('#brPickCoordSubmit');
   if(btnIn) btnIn.textContent = c.input ? ('✓ 给分点坐标已拾取 ('+c.input.x+','+c.input.y+')') : '拾取给分点';
-  if(btnSub) btnSub.textContent = c.submit ? ('✓ 提交按钮坐标已拾取 ('+c.submit.x+','+c.submit.y+')') : '拾取提交按钮';
+  if(btnSub) btnSub.textContent = c.submit ? ('✓ 提交按钮坐标已拾取 ('+c.submit.x+','+c.submit.y+')') : '提交按钮坐标';
   // 元素拾取按钮反馈（含 iframe 内拾取场景）：拾取后变绿
   const eIn = $('#brPickInput'), eSub = $('#brPickSubmit');
   const inOk = !!(s.input || (c.input && c.input.pickType==='input'));
@@ -1751,7 +1754,7 @@ function updatePickTags(){
   if(!s.input && c.input && c.input.pickType==='input') inDesc = 'iframe内 ('+c.input.x+','+c.input.y+')';
   let subDesc = s.submit || '未配置';
   if(!s.submit && c.submit) subDesc = 'iframe内 ('+c.submit.x+','+c.submit.y+')';
-  $('#brSelectorInfo').textContent = '分数输入框：'+inDesc+'　提交按钮：'+subDesc+(subOk?'':'（未拾取时依赖平台自动提交）');
+  setTxt('brSelectorInfo', '分数输入框：'+inDesc+'　提交按钮：'+subDesc+(subOk?'':'（未拾取时依赖平台自动提交）'));
 }
 function applyFillMode(){
   const mode = $('#brFillMode').value;
@@ -1829,10 +1832,15 @@ function bindBrowserEvents(){
       updatePickTags();
       brLog('自动识别结果：分数输入框='+(res.scoreInput||'未找到')+'，提交按钮='+(res.submitBtn||'未找到'), okAny?'i':'e');
       toast(okAny?'已自动识别并配置':'未识别到，请用诊断查看结构', okAny?'ok':'err');
+      if(btn){
+        btn.textContent = okAny ? '✓ 已识别' : (oldText || '🔧 自动识别元素');
+        btn.classList.toggle('picked', okAny);
+      }
     }catch(e){
-      brLog('自动识别异常: '+e.message,'e');
+      brLog('自动识别异常: '+e.message+(e.stack?(' | '+String(e.stack).split('\n')[1]||''):''),'e');
+      if(btn){ btn.textContent = oldText || '🔧 自动识别元素'; btn.classList.remove('picked'); }
     }finally{
-      if(btn){ btn.classList.remove('picking'); btn.textContent = oldText || '🔧 自动识别元素'; }
+      if(btn) btn.classList.remove('picking');
     }
   };
   $('#brDumpDom').onclick = async ()=>{
