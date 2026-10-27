@@ -1,5 +1,12 @@
 # YJAI · AI 阅卷助手 更新日志
 
+## v1.4.3（2026-10-27）
+
+**修复：导入图片报「Cannot read properties of undefined (reading 'trim')」**
+
+- 根因：试卷 AI 解析后题目用的是 `question` 字段，而整卷阅卷读取的是 `text` 字段，导致解析后的题目 `text` 为 `undefined`，导入答卷/答题卡时 `q.text.trim()` 抛错
+- 修复：`parseExamPaper` 统一输出 `text` 字段；旧数据迁移补 `text`；所有题目过滤改为 `(q.text||'').trim()` 防御式处理
+
 ## v1.4.2（2026-10-27）
 
 **修复：导入答卷 / 答题卡无反应（PDF 答题卡）**

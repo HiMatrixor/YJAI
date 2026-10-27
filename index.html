@@ -1081,6 +1081,7 @@ async function parseExamPaper(rawText){
     type: q.type || '主观题',
     objective: !!q.objective,
     question: q.question || '',
+    text: q.question || '',   // 整卷阅卷用 text 字段，避免解析后 text 为 undefined
     fullScore: Number(q.fullScore) || 0,
     answer: q.answer || '',
     reference: q.answer || '',
@@ -1959,8 +1960,8 @@ function loadExam(){
     const v=localStorage.getItem('yjai_exam');
     if(v){const o=JSON.parse(v);if(o&&Array.isArray(o.questions)&&o.questions.length){
       examState.title=o.title||'';examState.subject=o.subject||'语文';
-      // 兼容旧数据：补充 objective/type/answer 字段
-      examState.questions=o.questions.map(q=>({objective:false,type:'主观题',answer:'',...q}));
+      // 兼容旧数据：补充 objective/type/answer/text 字段
+      examState.questions=o.questions.map(q=>({objective:false,type:'主观题',answer:'',text:q.text??q.question??'',...q}));
       examState.students=o.students||[];return true;
     }}
   }catch(e){}
@@ -2073,7 +2074,7 @@ function extractStudentName(text){
 }
 async function runExam(){
   if(!state.settings.apiKey){toast('请先在「设置」中配置 API Key','err');switchView('settings');return;}
-  const qs=examState.questions.filter(q=>q.text.trim());
+  const qs=examState.questions.filter(q=>(q.text||'').trim());
   if(!qs.length){toast('请先填写至少一道题目','err');return;}
   const sts=examState.students.filter(s=>(s.name||'').trim()||qs.some(q=>String((s.answers||{})[q.id]||'').trim())||s.recognition);
   if(!sts.length){toast('请先添加学生答卷','err');return;}
@@ -2110,7 +2111,7 @@ async function runExam(){
   finally{prog.textContent='';btn.disabled=false;btn.textContent='🚀 开始整卷阅卷';}
 }
 function renderExamResult(){
-  const qs=examState.questions.filter(q=>q.text.trim());
+  const qs=examState.questions.filter(q=>(q.text||'').trim());
   const box=$('#examResultTable');
   if(!examState.results.length){box.innerHTML='';return;}
   $('#examResultCard').style.display='';
@@ -2144,7 +2145,7 @@ function renderExamResult(){
 }
 function exportExamCsv(){
   if(!examState.results.length){toast('暂无成绩可导出','err');return;}
-  const qs=examState.questions.filter(q=>q.text.trim());
+  const qs=examState.questions.filter(q=>(q.text||'').trim());
   const esc2=s=>'"'+String(s??'').replace(/"/g,'""')+'"';
   const head=['排名','学生','考号',...qs.map(q=>'第'+q.num+'题('+q.fullScore+'分)'),'总分','得分率%','状态'];
   const rows=examState.results.map(r=>[r.rank??'',r.student,r.examNo||'',...qs.map(q=>(r.scores[q.id]&&r.scores[q.id].score!=null)?r.scores[q.id].score:''),r.total??'',r.rate??'',({graded:'已完成',absent:'缺考',incomplete:'未完成'}[r.status]||r.status)].map(esc2).join(','));
@@ -2153,7 +2154,7 @@ function exportExamCsv(){
 }
 function exportExamMd(){
   if(!examState.results.length){toast('暂无成绩可导出','err');return;}
-  const qs=examState.questions.filter(q=>q.text.trim());
+  const qs=examState.questions.filter(q=>(q.text||'').trim());
   let md=`# ${examState.title||'整卷阅卷'} 成绩单\n\n`;
   md+=`- 科目：${examState.subject}\n- 答卷数：${examState.results.length}\n- 有效评分：${examState.results.filter(r=>r.status==='graded').length}\n- 试卷总分：${examState.results[0].fullTotal} 分\n\n`;
   md+='| 排名 | 学生 | '+qs.map(q=>'第'+q.num+'题').join(' | ')+' | 总分 | 得分率 | 状态 |\n';
@@ -2375,7 +2376,7 @@ function validateCardStudent(student,questions){
   return issues;
 }
 function validateAllCards(context){
-  const students=cardStudents(context),qs=context==='exam'?examState.questions.filter(q=>q.text.trim()):currentGradeCardQuestions();
+  const students=cardStudents(context),qs=context==='exam'?examState.questions.filter(q=>(q.text||'').trim()):currentGradeCardQuestions();
   const byExamNo=new Map();students.forEach(s=>{if(s.recognition){s.recognition.issues=[];validateCardStudent(s,qs);if(s.examNo&&s.attendance!=='absent'){if(!byExamNo.has(s.examNo))byExamNo.set(s.examNo,[]);byExamNo.get(s.examNo).push(s);}}});
   byExamNo.forEach(list=>{if(list.length>1)list.forEach(s=>s.recognition.issues.push({code:'DUPLICATE_EXAM_NO',message:'考号 '+s.examNo+' 与其他答卷重复',severity:'block',qid:''}));});
   return students.filter(s=>s.recognition);
@@ -2388,7 +2389,7 @@ function cardBlockReason(student,questions){
   return '';
 }
 async function importAnswerCards(files,context){
-  const questions=context==='exam'?examState.questions.filter(q=>q.text.trim()):currentGradeCardQuestions();
+  const questions=context==='exam'?examState.questions.filter(q=>(q.text||'').trim()):currentGradeCardQuestions();
   if(!questions.length||!questions[0].text){toast('请先填写并解析题目','err');return;}
   if(!state.settings.apiKey){toast('请先配置 API Key','err');switchView('settings');return;}
   const prog=$(context==='exam'?'#examSheetProgress':'#gradeCardProgress');
@@ -2425,7 +2426,7 @@ function onUploadGradeCards(e){const files=Array.from(e.target.files||[]);e.targ
 function openCardReview(context,studentId){
   const students=cardStudents(context).filter(s=>s.recognition);
   if(!students.length){toast('尚未导入答题卡','err');return;}
-  const questions=context==='exam'?examState.questions.filter(q=>q.text.trim()):currentGradeCardQuestions();
+  const questions=context==='exam'?examState.questions.filter(q=>(q.text||'').trim()):currentGradeCardQuestions();
   cardReviewCtx={context,questions,studentId:studentId||students[0].id};
   $('#cardReviewModal').classList.add('show');renderCardReview();
 }
