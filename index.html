@@ -206,6 +206,22 @@
   .br-log .i{color:var(--accent2)}
   .br-log .w{color:var(--amber)}
   .br-log .e{color:var(--red)}
+  /* ---- 通用答题卡识别与复核 ---- */
+  .card-status{display:inline-flex;align-items:center;padding:2px 8px;border-radius:12px;font-size:11px;background:rgba(63,185,80,.12);color:var(--green);white-space:nowrap}
+  .card-status.warn{background:rgba(210,153,34,.14);color:var(--amber)}
+  .card-status.err{background:rgba(248,81,73,.14);color:var(--red)}
+  .review-modal{width:96%;max-width:1180px;height:88vh;max-height:88vh;display:flex;flex-direction:column;overflow:hidden}
+  .review-toolbar{display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin-bottom:10px}
+  .review-toolbar>*{min-width:150px}
+  .review-layout{display:grid;grid-template-columns:minmax(280px,1fr) minmax(360px,1fr);gap:14px;min-height:0;flex:1}
+  .review-page,.review-fields{min-height:0;overflow:auto;background:var(--bg);border:1px solid var(--border2);border-radius:10px;padding:12px}
+  .review-page img{display:block;max-width:100%;max-height:calc(88vh - 190px);margin:8px auto;object-fit:contain;background:#fff}
+  .review-issue{padding:6px 9px;margin:5px 0;border-left:3px solid var(--amber);background:rgba(210,153,34,.08);font-size:12px}
+  .review-issue.block{border-color:var(--red);background:rgba(248,81,73,.08)}
+  .review-answer{display:grid;grid-template-columns:64px minmax(130px,1fr) 112px;gap:8px;align-items:start;padding:8px 0;border-bottom:1px solid var(--border)}
+  .review-answer textarea{min-height:52px}
+  .review-answer .qnum{padding-top:8px;font-weight:600}
+  @media(max-width:800px){.review-layout{grid-template-columns:1fr}.review-page img{max-height:40vh}.review-answer{grid-template-columns:48px 1fr}.review-answer select{grid-column:2}}
 </style>
 </head>
 <body>
@@ -396,6 +412,13 @@
             <label>本题满分</label>
             <input type="number" id="gradeFullScore" value="6" min="0.5" step="0.5" />
           </div>
+          <div>
+            <label>判分方式</label>
+            <select id="gradeAnswerMode">
+              <option value="subjective">主观题 · AI 评分</option>
+              <option value="objective">客观题 · 标准答案比对</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -451,13 +474,17 @@
       </div>
 
       <div class="card">
-        <h3>3 · 输入学生答案 <span class="tag">可批量</span></h3>
-        <div class="hint" style="margin-bottom:10px">每位学生一份答案，支持文本输入或上传手写答案图片（AI 视觉识别）。<b>请在答卷上写清姓名或考号</b>，软件会自动识别并用于对应与导出。</div>
+        <h3>3 · 输入学生答案 <span class="tag">文本 / 图片 / 通用答题卡</span></h3>
+        <div class="hint" style="margin-bottom:10px">支持文本、手写答案图片和不同版式答题卡。答题卡会先识别再复核；多页图片请按「姓名_1、姓名_2」命名，扫描 PDF 按一个文件一名学生处理。</div>
         <div id="stuList"></div>
         <div class="row end" style="margin-top:12px">
           <button class="btn btn-ghost" id="btnAddStudent">＋ 添加学生</button>
+          <button class="btn btn-primary" id="btnUploadGradeCards">📇 导入答题卡</button>
+          <button class="btn btn-ghost" id="btnReviewGradeCards">🔎 复核答题卡</button>
           <button class="btn btn-ghost" id="btnPasteBatch">从剪贴板批量粘贴</button>
         </div>
+        <input type="file" id="gradeCardFiles" accept="image/*,.pdf,application/pdf" multiple style="display:none" />
+        <div class="hint" id="gradeCardProgress" style="margin-top:8px"></div>
       </div>
 
       <div class="card" style="text-align:center">
@@ -515,15 +542,16 @@
       </div>
 
       <div class="card">
-        <h3>3 · 学生答卷 <span class="tag">图片批量导入</span></h3>
-        <div class="hint" style="margin-bottom:10px">每位学生一份答卷。<b>请在答卷上写清姓名或考号</b>，AI 会自动识别并用于对应与导出。支持「上传答卷图片」（AI 视觉识别）、「从剪贴板批量导入」文本。</div>
+        <h3>3 · 学生答卷 <span class="tag">通用答题卡 · 多页 · 异常复核</span></h3>
+        <div class="hint" style="margin-bottom:10px">兼容不同栏式、填涂区和主观题版式，支持图片及扫描 PDF。多页图片请按「姓名_1、姓名_2」命名；每个 PDF 视为一名学生。无法确定的填涂会要求复核，不会直接按零分处理。</div>
         <div id="examStudents"></div>
         <div class="row end" style="margin-top:10px">
           <button class="btn btn-ghost" id="btnAddExamStudent">＋ 添加学生</button>
-          <button class="btn btn-ghost" id="btnUploadExamSheets">📷 批量上传答卷图片</button>
+          <button class="btn btn-primary" id="btnUploadExamSheets">📇 导入答卷 / 答题卡</button>
+          <button class="btn btn-ghost" id="btnReviewExamCards">🔎 复核答题卡</button>
           <button class="btn btn-ghost" id="btnPasteExam">从剪贴板批量导入</button>
         </div>
-        <input type="file" id="examSheetFiles" accept="image/*" multiple style="display:none" />
+        <input type="file" id="examSheetFiles" accept="image/*,.pdf,application/pdf" multiple style="display:none" />
         <div class="hint" id="examSheetProgress" style="margin-top:8px"></div>
       </div>
 
@@ -705,6 +733,38 @@
   </div>
 </div>
 
+<!-- 通用答题卡复核弹窗 -->
+<div class="modal-mask" id="cardReviewModal">
+  <div class="modal review-modal">
+    <h3>📇 答题卡识别复核 <span class="hint" id="cardReviewSummary"></span></h3>
+    <div class="review-toolbar">
+      <div><label>学生</label><select id="cardReviewStudent"></select></div>
+      <div><label>页面</label><select id="cardReviewPage"></select></div>
+      <button class="btn btn-ghost" id="btnCardReRecognize">重新识别本页</button>
+    </div>
+    <div class="review-layout">
+      <div class="review-page">
+        <div class="hint" id="cardReviewPageInfo"></div>
+        <img id="cardReviewImage" alt="答题卡原图" />
+      </div>
+      <div class="review-fields">
+        <div class="grid2">
+          <div><label>姓名</label><input type="text" id="cardReviewName" /></div>
+          <div><label>考号</label><input type="text" id="cardReviewExamNo" /></div>
+        </div>
+        <label>到考状态</label>
+        <select id="cardReviewAttendance"><option value="present">正常到考</option><option value="absent">缺考</option><option value="unknown">无法确定</option></select>
+        <div id="cardReviewIssues" style="margin-top:10px"></div>
+        <div id="cardReviewAnswers" style="margin-top:10px"></div>
+      </div>
+    </div>
+    <div class="row end" style="margin-top:12px">
+      <button class="btn btn-ghost" id="btnCardReviewClose">关闭</button>
+      <button class="btn btn-primary" id="btnCardReviewSave">保存并确认本生</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 <div class="token-badge" id="tokenBadge" title="累计 Token 消耗统计">⚡ 输入 <b id="tkIn">0</b> · 输出 <b id="tkOut">0</b></div>
 
@@ -763,7 +823,7 @@ let examState = {
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
-function esc(s){return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function toast(msg,type=''){const t=$('#toast');if(!t){console.log('[toast]',msg);return;}t.textContent=msg;t.className='toast show '+type;clearTimeout(t._t);t._t=setTimeout(()=>t.className='toast',2600);}
 function save(k,v){try{localStorage.setItem('yjai_'+k,JSON.stringify(v));}catch(e){toast('存储失败：'+e.message,'err');}}
 function load(k,d){try{const v=localStorage.getItem('yjai_'+k);return v?JSON.parse(v):d;}catch(e){return d;}}
@@ -1039,6 +1099,7 @@ function renderStudents(){
       <div class="stu-head">
         <span style="font-size:12px;color:var(--muted)">#${i+1}</span>
         <input type="text" placeholder="姓名 / 考号（可选，AI 可自动识别）" value="${esc(s.name)}" data-id="${s.id}" data-f="name" />
+        ${s.recognition?`<span class="card-status ${(s.recognition.issues||[]).some(i=>i.severity==='block')?'err':((s.recognition.issues||[]).length?'warn':'')}">${s.attendance==='absent'?'缺考':((s.recognition.issues||[]).length?'待复核 '+s.recognition.issues.length+' 项':'答题卡已识别')}</span><button class="btn btn-ghost btn-sm" data-id="${s.id}" data-f="review">复核</button>`:''}
         <label class="switch" style="margin:0"><input type="file" accept="image/*" data-id="${s.id}" data-f="img" style="display:none"/>📷 上传答案图片</label>
         <button class="btn btn-ghost btn-sm" data-id="${s.id}" data-f="del">删除</button>
       </div>
@@ -1058,6 +1119,7 @@ function bindStudents(){
   $('#stuList').addEventListener('click',e=>{
     const el=e.target;
     if(el.dataset.f==='del'){state.students=state.students.filter(x=>x.id!==el.dataset.id);renderStudents();}
+    if(el.dataset.f==='review')openCardReview('grade',el.dataset.id);
     if(el.dataset.img!==undefined){const s=state.students.find(x=>x.id===el.dataset.id);if(s){s.images.splice(+el.dataset.img,1);renderStudents();}}
   });
   $('#stuList').addEventListener('change',e=>{
@@ -1135,6 +1197,7 @@ function applyGradeParsedQuestion(idx){
   $('#gradePoints').value = q.points || '';
   $('#gradeWrong').value = q.wrong || '';
   $('#gradeNote').value = q.note || '';
+  $('#gradeAnswerMode').value = q.objective?'objective':'subjective';
   // 满分：若识别到 fullScore 则填入
   if(q.fullScore) $('#gradeFullScore').value = q.fullScore;
 }
@@ -1221,44 +1284,51 @@ async function gradeOneStudent(stu){
   const messages=[{role:'system',content:sys},{role:'user',content:user}];
   if(images && images.length){
     const content=[{type:'text',text:user}];
-    images.slice(0,4).forEach(im=>content.push({type:'image_url',image_url:{url:im}}));
+    images.forEach(im=>content.push({type:'image_url',image_url:{url:im}}));
     messages[1]={role:'user',content};
   }
   const raw=await callAI(messages,{json:true});
   const j=parseAIJson(raw);
-  j.score = Number(j.score); j.fullScore = Number(j.fullScore)||Number($('#gradeFullScore').value)||0;
+  j.fullScore = Number(j.fullScore)||Number($('#gradeFullScore').value)||0;
+  j.score = Math.max(0,Math.min(j.fullScore,Number(j.score)||0));
   j.rate = j.rate!=null?Number(j.rate):(j.fullScore?Math.round(j.score/j.fullScore*1000)/10:0);
   j.details = Array.isArray(j.details)?j.details:[];
   return j;
 }
 async function runGrading(){
   if(!state.settings.apiKey){toast('请先在「设置」中配置 API Key','err');switchView('settings');return;}
-  const valid=state.students.filter(s=>s.text.trim()||s.images.length);
+  const valid=state.students.filter(s=>(s.text||'').trim()||(s.images||[]).length||s.recognition);
   if(!valid.length){toast('请先添加学生答案','err');return;}
   if(!$('#gradeQuestion').value.trim()){toast('请填写题目内容','err');return;}
+  const cardQs=currentGradeCardQuestions();validateAllCards('grade');
+  const blocked=valid.find(s=>s.recognition&&((s.recognition.questionText&&s.recognition.questionText!==cardQs[0].text)?'导入后题目已修改，请重新导入答题卡':cardBlockReason(s,cardQs)));
+  if(blocked){toast((blocked.name||'有答卷')+' 需要复核','err');openCardReview('grade',blocked.id);return;}
+  if($('#gradeAnswerMode').value==='objective'&&!$('#gradeReference').value.trim()){toast('客观题请在参考答案中填写标准答案','err');return;}
   const btn=$('#btnStartGrade'); btn.disabled=true; btn.textContent='⏳ 阅卷中…';
   const prog=$('#gradeProgress'); state.gradeResults=[];
   const subject=$('#gradeSubject').value, full=Number($('#gradeFullScore').value)||6;
-  for(let i=0;i<valid.length;i++){
-    prog.textContent=`正在批改第 ${i+1}/${valid.length} 份…`;
-    try{
-      const r=await gradeOneStudent(valid[i]);
-      // 学生名称为空时，尝试从答案首行自动识别姓名/考号
-      let sname = valid[i].name;
-      if(!sname) sname = extractStudentName(valid[i].text) || ('学生'+(i+1));
-      const rec={id:uid(),student:sname,subject,
-        question:$('#gradeQuestion').value.trim().slice(0,80),
-        score:r.score,fullScore:r.fullScore||full,rate:r.rate,
-        details:r.details,deduction:r.deduction,comment:r.comment,suggestion:r.suggestion,
-        time:new Date().toLocaleString('zh-CN')};
-      state.gradeResults.push(rec); state.records.push(rec);
-    }catch(e){toast('第 '+(i+1)+' 份批改失败：'+e.message,'err');}
-  }
-  save('records',state.records);
-  prog.textContent='';
-  btn.disabled=false; btn.textContent='🚀 开始 AI 阅卷';
-  renderResults();
-  toast('阅卷完成，共 '+state.gradeResults.length+' 份','ok');
+  try{
+    for(let i=0;i<valid.length;i++){
+      prog.textContent=`正在处理第 ${i+1}/${valid.length} 份…`;
+      const s=valid[i];let sname=s.name||extractStudentName(s.text)||('学生'+(i+1));
+      if(s.attendance==='absent'){
+        const rec={id:uid(),student:sname,examNo:s.examNo||'',subject,question:$('#gradeQuestion').value.trim().slice(0,80),score:null,fullScore:full,rate:null,details:[],comment:'缺考',status:'absent',time:new Date().toLocaleString('zh-CN')};
+        state.gradeResults.push(rec);state.records.push(rec);continue;
+      }
+      try{
+        const r=$('#gradeAnswerMode').value==='objective'?gradeObjective({fullScore:full,answer:$('#gradeReference').value},s.text||''):await gradeOneStudent(s);
+        const rate=r.rate!=null?r.rate:(full?Math.round(r.score/full*1000)/10:0);
+        const rec={id:uid(),student:sname,examNo:s.examNo||'',subject,status:'graded',
+          question:$('#gradeQuestion').value.trim().slice(0,80),score:r.score,fullScore:r.fullScore||full,rate,
+          details:r.details||[],deduction:r.deduction||'',comment:r.comment||'',suggestion:r.suggestion||'',time:new Date().toLocaleString('zh-CN')};
+        state.gradeResults.push(rec); state.records.push(rec);
+      }catch(e){
+        const rec={id:uid(),student:sname,examNo:s.examNo||'',subject,status:'incomplete',question:$('#gradeQuestion').value.trim().slice(0,80),score:null,fullScore:full,rate:null,details:[],comment:'批改失败：'+e.message,time:new Date().toLocaleString('zh-CN')};
+        state.gradeResults.push(rec);state.records.push(rec);toast('第 '+(i+1)+' 份批改失败：'+e.message,'err');
+      }
+    }
+    save('records',state.records);renderResults();toast('阅卷完成，共 '+state.gradeResults.length+' 份','ok');
+  }finally{prog.textContent='';btn.disabled=false;btn.textContent='🚀 开始 AI 阅卷';}
 }
 function scoreClass(r){return r>=0.85?'score-high':(r>=0.6?'score-mid':'score-low');}
 function renderResults(){
@@ -1268,9 +1338,9 @@ function renderResults(){
   box.innerHTML=state.gradeResults.map((r,i)=>`
     <div class="stu-item" style="margin-bottom:14px">
       <div class="stu-head">
-        <span class="score-badge ${scoreClass(r.rate/100)}">${r.score} / ${r.fullScore}</span>
+        <span class="score-badge ${r.status==='graded'||r.status==null?scoreClass(r.rate/100):''}">${r.score==null?'—':r.score} / ${r.fullScore}</span>
         <span style="font-weight:600">${esc(r.student)}</span>
-        <span style="font-size:12px;color:var(--muted)">${esc(r.subject)} · 得分率 ${r.rate}%</span>
+        <span style="font-size:12px;color:var(--muted)">${esc(r.subject)} · ${r.rate==null?(r.status==='absent'?'缺考':'未完成'):'得分率 '+r.rate+'%'}</span>
       </div>
       <div class="stu-body">
         <div style="margin-bottom:6px">
@@ -1871,7 +1941,13 @@ function toggleBrPreview(){
 }
 
 /* ================= 整卷阅卷 ================= */
-function saveExam(){ try{localStorage.setItem('yjai_exam',JSON.stringify({title:examState.title,subject:examState.subject,questions:examState.questions,students:examState.students}));}catch(e){} }
+function saveExam(){
+  try{
+    // 原图仅供本次复核和评分使用，不写入 localStorage，避免扫描图耗尽存储配额。
+    const students=examState.students.map(s=>({...s,images:undefined,recognition:s.recognition?{...s.recognition,pages:(s.recognition.pages||[]).map(p=>({...p,dataUrl:undefined}))}:undefined}));
+    localStorage.setItem('yjai_exam',JSON.stringify({title:examState.title,subject:examState.subject,questions:examState.questions,students}));
+  }catch(e){}
+}
 function loadExam(){
   try{
     const v=localStorage.getItem('yjai_exam');
@@ -1936,6 +2012,7 @@ function renderExamStudents(){
       <div class="stu-head">
         <span style="font-size:12px;color:var(--muted)">#${si+1}</span>
         <input type="text" placeholder="姓名 / 考号（可选，AI 可自动识别）" data-s="${s.id}" data-f="name" value="${esc(s.name)}" />
+        ${s.recognition?`<span class="card-status ${(s.recognition.issues||[]).some(i=>i.severity==='block')?'err':((s.recognition.issues||[]).length?'warn':'')}">${s.attendance==='absent'?'缺考':((s.recognition.issues||[]).length?'待复核 '+s.recognition.issues.length+' 项':'答题卡已识别')}</span><button class="btn btn-ghost btn-sm" data-s="${s.id}" data-act="review">复核</button>`:''}
         <button class="btn btn-danger btn-sm" data-s="${s.id}" data-act="dels">删除</button>
       </div>
       <div class="stu-body">
@@ -1950,12 +2027,14 @@ function renderExamStudents(){
       </div>
     </div>`).join('');
 }
-async function gradeOneExamQuestion(q, answerText){
+async function gradeOneExamQuestion(q, answerText, images=[]){
   const sys='你是一位严谨、公正的阅卷老师。你必须只输出一个合法的 JSON 对象，不要输出任何其他文字。';
-  const user=`【题目】${q.text||'（未提供）'}\n【本题满分】${q.fullScore} 分\n【参考答案】${q.reference||'（未提供）'}\n【得分点】${q.points||'（未提供）'}\n${q.wrong?'【不得分答案】'+q.wrong+'\n':''}${q.note?'【备注】'+q.note+'\n':''}\n【学生答案】${answerText||'（未作答）'}\n\n请按评分标准评分，输出 JSON 对象：\n{"score":数字(0到满分之间，可含0.5),"comment":"评语(1句，含给分/扣分理由)"}`;
-  const raw=await callAI([{role:'system',content:sys},{role:'user',content:user}],{json:true});
-  const j=parseAIJson(raw);
-  j.score=Number(j.score)||0;
+  const user=`【题目】${q.text||'（未提供）'}\n【本题满分】${q.fullScore} 分\n【参考答案】${q.reference||'（未提供）'}\n【得分点】${q.points||'（未提供）'}\n${q.wrong?'【不得分答案】'+q.wrong+'\n':''}${q.note?'【备注】'+q.note+'\n':''}\n【学生答案】${answerText||'（未作答）'}\n\n请按评分标准评分。若附答题卡原图，原图用于核对公式、图形和识别文本；识别文本与原图冲突时以清晰可见的原图为准，并在评语中说明。输出 JSON 对象：\n{"score":数字(0到满分之间，可含0.5),"comment":"评语(1句，含给分/扣分理由)"}`;
+  let content=user;
+  if(images.length){content=[{type:'text',text:user}];images.forEach(im=>content.push({type:'image_url',image_url:{url:im}}));}
+  const raw=await callAI([{role:'system',content:sys},{role:'user',content}],{json:true});
+  const j=parseAIJson(raw),full=Number(q.fullScore)||0;
+  j.score=Math.max(0,Math.min(full,Number(j.score)||0));
   return j;
 }
 /* 客观题本地比对：答案归一化后精确匹配（支持单选/填空/判断） */
@@ -1970,7 +2049,8 @@ function gradeObjective(q, answerText){
 }
 function normalizeAnswer(s){
   if(s==null) return '';
-  return String(s).trim().toUpperCase().replace(/[\s,，。;；:：\u3000]/g,'').replace(/^[（(]/,'').replace(/[）)]$/,'');
+  const v=String(s).trim().toUpperCase().replace(/[\s,，。;；:：\u3000]/g,'').replace(/^[（(]/,'').replace(/[）)]$/,'');
+  return /^[A-Z]{2,}$/.test(v)?v.split('').sort().join(''):v;
 }
 /* 从答案文本首行尝试提取姓名/考号（用于减少学生信息录入） */
 function extractStudentName(text){
@@ -1989,67 +2069,69 @@ async function runExam(){
   if(!state.settings.apiKey){toast('请先在「设置」中配置 API Key','err');switchView('settings');return;}
   const qs=examState.questions.filter(q=>q.text.trim());
   if(!qs.length){toast('请先填写至少一道题目','err');return;}
-  const sts=examState.students.filter(s=>s.name.trim()||qs.some(q=>(s.answers[q.id]||'').trim()));
+  const sts=examState.students.filter(s=>(s.name||'').trim()||qs.some(q=>String((s.answers||{})[q.id]||'').trim())||s.recognition);
   if(!sts.length){toast('请先添加学生答卷','err');return;}
+  validateAllCards('exam');
+  const blocked=sts.find(s=>s.recognition&&cardBlockReason(s,qs));
+  if(blocked){toast((blocked.name||'有答卷')+'：'+cardBlockReason(blocked,qs),'err');openCardReview('exam',blocked.id);return;}
   const btn=$('#btnStartExam'); btn.disabled=true; btn.textContent='⏳ 阅卷中…';
   const prog=$('#examProgress');
   const fullTotal=qs.reduce((a,b)=>a+(Number(b.fullScore)||0),0);
   examState.results=[];
-  for(let si=0;si<sts.length;si++){
-    const s=sts[si];
-    let sname = s.name || ('学生'+(si+1));
-    let total=0; const scores={};
-    for(let qi=0;qi<qs.length;qi++){
-      const q=qs[qi];
-      prog.textContent=`正在批改 ${sname} · 第 ${qi+1}/${qs.length} 题…`;
-      try{
-        let r;
-        if(q.objective){
-          r = gradeObjective(q, s.answers[q.id]||'');
-        } else {
-          r = await gradeOneExamQuestion(q, s.answers[q.id]||'');
-        }
-        scores[q.id]={score:r.score,comment:r.comment||''};
-        total+=r.score;
-      }catch(e){ scores[q.id]={score:null,comment:'批改失败: '+e.message}; }
+  try{
+    for(let si=0;si<sts.length;si++){
+      const s=sts[si],sname=s.name||(s.examNo?'考号 '+s.examNo:'学生'+(si+1));
+      if(s.attendance==='absent'){
+        const scores={};qs.forEach(q=>scores[q.id]={score:null,comment:'缺考'});
+        examState.results.push({student:sname,examNo:s.examNo||'',status:'absent',scores,total:null,fullTotal,rate:null,rank:null});continue;
+      }
+      let total=0,complete=true;const scores={};
+      const cardImages=s.recognition?(s.recognition.pages||[]).map(p=>p.dataUrl).filter(Boolean):[];
+      for(let qi=0;qi<qs.length;qi++){
+        const q=qs[qi];prog.textContent=`正在批改 ${sname} · 第 ${qi+1}/${qs.length} 题…`;
+        try{
+          const r=q.objective?gradeObjective(q,s.answers[q.id]||''):await gradeOneExamQuestion(q,s.answers[q.id]||'',cardImages);
+          scores[q.id]={score:r.score,comment:r.comment||''};total+=r.score;
+        }catch(e){complete=false;scores[q.id]={score:null,comment:'批改失败: '+e.message};}
+      }
+      total=Math.round(total*10)/10;
+      examState.results.push({student:sname,examNo:s.examNo||'',status:complete?'graded':'incomplete',scores,total:complete?total:null,partialTotal:total,fullTotal,rate:complete&&fullTotal?Math.round(total/fullTotal*1000)/10:null,rank:null});
     }
-    examState.results.push({student:sname,scores,total:Math.round(total*10)/10,fullTotal,rate:fullTotal?Math.round(total/fullTotal*1000)/10:0});
-  }
-  examState.results.sort((a,b)=>b.total-a.total);
-  examState.results.forEach((r,i)=>r.rank=i+1);
-  prog.textContent='';
-  btn.disabled=false; btn.textContent='🚀 开始整卷阅卷';
-  renderExamResult();
-  toast('整卷阅卷完成，共 '+examState.results.length+' 份','ok');
+    examState.results.sort((a,b)=>(b.total??-1)-(a.total??-1));let rank=0;
+    examState.results.forEach(r=>{if(r.status==='graded')r.rank=++rank;});
+    renderExamResult();toast('整卷阅卷完成，共 '+examState.results.length+' 份','ok');
+  }catch(e){toast('整卷阅卷中断：'+e.message,'err');}
+  finally{prog.textContent='';btn.disabled=false;btn.textContent='🚀 开始整卷阅卷';}
 }
 function renderExamResult(){
   const qs=examState.questions.filter(q=>q.text.trim());
   const box=$('#examResultTable');
   if(!examState.results.length){box.innerHTML='';return;}
   $('#examResultCard').style.display='';
-  const n=examState.results.length;
-  const totals=examState.results.map(r=>r.total);
-  const avg=totals.reduce((a,b)=>a+b,0)/n;
-  const max=Math.max(...totals), min=Math.min(...totals);
-  const pass=examState.results.filter(r=>r.rate>=60).length;
-  const good=examState.results.filter(r=>r.rate>=85).length;
+  const n=examState.results.length,graded=examState.results.filter(r=>r.status==='graded');
+  const totals=graded.map(r=>r.total),gn=graded.length;
+  const avg=gn?totals.reduce((a,b)=>a+b,0)/gn:0;
+  const max=gn?Math.max(...totals):0, min=gn?Math.min(...totals):0;
+  const pass=graded.filter(r=>r.rate>=60).length;
+  const good=graded.filter(r=>r.rate>=85).length;
   $('#examStatRow').innerHTML=`
-    <div class="stat"><div class="v">${n}</div><div class="k">参加人数</div></div>
+    <div class="stat"><div class="v">${gn}<span style="font-size:12px;color:var(--muted)"> / ${n}</span></div><div class="k">已评分 / 总答卷</div></div>
     <div class="stat"><div class="v" style="color:var(--accent2)">${avg.toFixed(1)}</div><div class="k">平均分</div></div>
     <div class="stat"><div class="v" style="color:var(--green)">${max.toFixed(1)}</div><div class="k">最高分</div></div>
     <div class="stat"><div class="v" style="color:var(--red)">${min.toFixed(1)}</div><div class="k">最低分</div></div>
-    <div class="stat"><div class="v" style="color:var(--green)">${(pass/n*100).toFixed(0)}%</div><div class="k">及格率</div></div>
-    <div class="stat"><div class="v" style="color:var(--purple)">${(good/n*100).toFixed(0)}%</div><div class="k">优秀率</div></div>`;
+    <div class="stat"><div class="v" style="color:var(--green)">${gn?(pass/gn*100).toFixed(0):0}%</div><div class="k">及格率</div></div>
+    <div class="stat"><div class="v" style="color:var(--purple)">${gn?(good/gn*100).toFixed(0):0}%</div><div class="k">优秀率</div></div>`;
   const head=qs.map(q=>`<th>第${q.num}题<br/><span style="font-weight:400;font-size:11px">${q.fullScore}分</span></th>`).join('');
   box.innerHTML=`<table>
-    <thead><tr><th>排名</th><th>学生</th>${head}<th>总分</th><th>得分率</th></tr></thead>
+    <thead><tr><th>排名</th><th>学生</th>${head}<th>总分</th><th>得分率</th><th>状态</th></tr></thead>
     <tbody>${examState.results.map(r=>`
       <tr>
-        <td>${r.rank}</td>
-        <td>${esc(r.student)}</td>
+        <td>${r.rank??'—'}</td>
+        <td>${esc(r.student)}${r.examNo?'<div class="hint">'+esc(r.examNo)+'</div>':''}</td>
         ${qs.map(q=>{const sc=r.scores[q.id]; const v=(sc&&sc.score!=null)?sc.score:'—'; return `<td title="${esc((sc&&sc.comment)||'')}">${v}</td>`;}).join('')}
-        <td><span class="score-badge ${scoreClass(r.rate/100)}">${r.total}</span></td>
-        <td>${r.rate}%</td>
+        <td><span class="score-badge ${r.status==='graded'?scoreClass(r.rate/100):''}">${r.total??'—'}</span>${r.status==='incomplete'?'<div class="hint">已得 '+r.partialTotal+' 分</div>':''}</td>
+        <td>${r.rate==null?'—':r.rate+'%'}</td>
+        <td>${r.status==='absent'?'<span class="card-status warn">缺考</span>':(r.status==='incomplete'?'<span class="card-status err">未完成</span>':'<span class="card-status">已完成</span>')}</td>
       </tr>`).join('')}
     </tbody></table>`;
   box.closest('.card').scrollIntoView({behavior:'smooth',block:'nearest'});
@@ -2058,8 +2140,8 @@ function exportExamCsv(){
   if(!examState.results.length){toast('暂无成绩可导出','err');return;}
   const qs=examState.questions.filter(q=>q.text.trim());
   const esc2=s=>'"'+String(s??'').replace(/"/g,'""')+'"';
-  const head=['排名','学生',...qs.map(q=>'第'+q.num+'题('+q.fullScore+'分)'),'总分','得分率%'];
-  const rows=examState.results.map(r=>[r.rank,r.student,...qs.map(q=>(r.scores[q.id]&&r.scores[q.id].score!=null)?r.scores[q.id].score:''),r.total,r.rate].map(esc2).join(','));
+  const head=['排名','学生','考号',...qs.map(q=>'第'+q.num+'题('+q.fullScore+'分)'),'总分','得分率%','状态'];
+  const rows=examState.results.map(r=>[r.rank??'',r.student,r.examNo||'',...qs.map(q=>(r.scores[q.id]&&r.scores[q.id].score!=null)?r.scores[q.id].score:''),r.total??'',r.rate??'',({graded:'已完成',absent:'缺考',incomplete:'未完成'}[r.status]||r.status)].map(esc2).join(','));
   const csv='\ufeff'+head.map(esc2).join(',')+'\n'+rows.join('\n');
   download((examState.title||'YJAI')+'整卷成绩.csv',csv,'text/csv');
 }
@@ -2067,11 +2149,11 @@ function exportExamMd(){
   if(!examState.results.length){toast('暂无成绩可导出','err');return;}
   const qs=examState.questions.filter(q=>q.text.trim());
   let md=`# ${examState.title||'整卷阅卷'} 成绩单\n\n`;
-  md+=`- 科目：${examState.subject}\n- 参加人数：${examState.results.length}\n- 试卷总分：${examState.results[0].fullTotal} 分\n\n`;
-  md+='| 排名 | 学生 | '+qs.map(q=>'第'+q.num+'题').join(' | ')+' | 总分 | 得分率 |\n';
-  md+='|'+Array(qs.length+5).fill('---').join('|')+'|\n';
+  md+=`- 科目：${examState.subject}\n- 答卷数：${examState.results.length}\n- 有效评分：${examState.results.filter(r=>r.status==='graded').length}\n- 试卷总分：${examState.results[0].fullTotal} 分\n\n`;
+  md+='| 排名 | 学生 | '+qs.map(q=>'第'+q.num+'题').join(' | ')+' | 总分 | 得分率 | 状态 |\n';
+  md+='|'+Array(qs.length+6).fill('---').join('|')+'|\n';
   examState.results.forEach(r=>{
-    md+=`| ${r.rank} | ${r.student} | `+qs.map(q=>(r.scores[q.id]&&r.scores[q.id].score!=null)?r.scores[q.id].score:'—').join(' | ')+` | ${r.total} | ${r.rate}% |\n`;
+    md+=`| ${r.rank??'—'} | ${r.student} | `+qs.map(q=>(r.scores[q.id]&&r.scores[q.id].score!=null)?r.scores[q.id].score:'—').join(' | ')+` | ${r.total??'—'} | ${r.rate==null?'—':r.rate+'%'} | ${({graded:'已完成',absent:'缺考',incomplete:'未完成'}[r.status]||r.status)} |\n`;
   });
   md+='\n## 逐题点评\n\n';
   examState.results.forEach(r=>{
@@ -2142,65 +2224,253 @@ async function onParsePaper(){
     btn.disabled=false; btn.textContent='🤖 AI 解析试卷';
   }
 }
-/* 批量上传答卷图片，AI 视觉识别每份答案 */
-function onUploadExamSheets(e){
-  const files = Array.from(e.target.files||[]);
-  if(!files.length) return;
-  if(!examState.questions.length){toast('请先添加/解析试卷题目','err');return;}
-  if(!state.settings.apiKey){toast('请先配置 API Key','err');switchView('settings');return;}
-  const prog=$('#examSheetProgress');
-  prog.textContent='正在读取 '+files.length+' 张答卷图片…'; prog.style.color='var(--muted)';
-  const readers = files.map(f=>new Promise((res,rej)=>{
-    if(f.size>8*1024*1024){rej(new Error('图片过大：'+f.name));return;}
-    const r=new FileReader();
-    r.onload=()=>res({name:f.name, dataUrl:r.result});
-    r.onerror=()=>rej(new Error('读取失败：'+f.name));
-    r.readAsDataURL(f);
-  }));
-  Promise.all(readers).then(async images=>{
-    prog.textContent='AI 正在识别 '+images.length+' 份答卷答案…'; prog.style.color='var(--muted)';
-    for(let i=0;i<images.length;i++){
-      prog.textContent='识别答卷 '+(i+1)+'/'+images.length+'：'+images[i].name;
-      try{
-        const r = await recognizeSheetAnswers(images[i].dataUrl);
-        // 优先用识别出的姓名/考号，其次取文件名（去掉扩展名）
-        let name = r.name || (r.examNo ? ('考号 '+r.examNo) : '');
-        if(!name) name = images[i].name.replace(/\.[^.]+$/,'');
-        examState.students.push({id:uid(), name:name, answers:r.answers});
-      }catch(err){
-        examState.students.push({id:uid(), name:images[i].name.replace(/\.[^.]+$/,''), answers:{}});
-      }
-    }
-    saveExam(); renderExamStudents();
-    prog.textContent='✅ 已识别 '+images.length+' 份答卷，请核对每份的答案（AI 识别可能有误差）。';
-    prog.style.color='var(--green)';
-    toast('已导入 '+images.length+' 份答卷图片','ok');
-  }).catch(err=>{
-    prog.textContent='导入失败：'+err.message; prog.style.color='var(--red)';
-  });
-  e.target.value='';
+/* ================= 通用答题卡：视觉提取 + 本地校验 + 人工复核 ================= */
+const CARD_REVIEW_CONFIDENCE = 0.80;
+let cardReviewCtx = null;
+function cardQuestionNum(n){return String(n??'').trim().replace(/^第\s*/,'').replace(/\s*题$/,'');}
+function cardConfidence(v){const n=Number(v);return Number.isFinite(n)?Math.max(0,Math.min(1,n>1&&n<=100?n/100:n)):0.5;}
+function cardStatus(v,value){
+  const s=String(v||'').toLowerCase();
+  if(['blank','empty','unanswered','未答','空白'].includes(s))return 'blank';
+  if(['multiple','multi-mark','多涂'].includes(s))return 'multiple';
+  if(['unclear','ambiguous','unreadable','无法识别','不清'].includes(s))return 'unclear';
+  if(['conflict','冲突'].includes(s))return 'conflict';
+  return String(value??'').trim()?'ok':'blank';
 }
-/* 单张答卷图片 → AI 视觉识别姓名考号 + 各题答案 */
-async function recognizeSheetAnswers(imageDataUrl){
-  const qs = examState.questions;
-  const qDesc = qs.map((q,i)=>'第'+(i+1)+'题：'+(q.text||'').slice(0,80)).join('\n');
-  const sys='你是答卷识别助手，从学生答卷图片中提取姓名/考号和各题答案。只输出 JSON。';
-  const user='下面是一张学生答卷图片。试卷题目顺序如下：\n'+qDesc+'\n\n请先识别答卷上的「姓名」和「考号」（若没有则留空字符串），再按题号顺序识别学生每一题的作答内容。\n输出严格 JSON 对象：\n{"name":"姓名","examNo":"考号","answers":{"1":"第一题答案","2":"第二题答案",...}}\n无法识别的题可留空字符串。';
-  const content = [
-    {type:'text', text:user},
-    {type:'image_url', image_url:{url:imageDataUrl}}
-  ];
-  const raw = await callAI([{role:'system',content:sys},{role:'user',content:content}],{json:true});
-  const j = parseAIJson(raw);
-  const name = (j && j.name) ? String(j.name).trim() : '';
-  const examNo = (j && j.examNo) ? String(j.examNo).trim() : '';
-  const answers = {};
-  qs.forEach((q,i)=>{
-    const key = String(i+1);
-    const a = (j && j.answers && j.answers[key]) ? String(j.answers[key]) : (j && j[key] ? String(j[key]) : '');
-    answers[q.id] = a;
+function currentGradeCardQuestions(){
+  const idx=+($('#gradeParsedSelect')&&$('#gradeParsedSelect').value||0);
+  const parsed=gradeParsedQuestions[idx];
+  return [{id:'grade-current',num:(parsed&&parsed.num)||'1',text:$('#gradeQuestion').value.trim(),fullScore:Number($('#gradeFullScore').value)||0,
+    objective:$('#gradeAnswerMode').value==='objective',type:$('#gradeAnswerMode').value==='objective'?'客观题':'主观题',answer:$('#gradeReference').value.trim()}];
+}
+function cardStudents(context){return context==='exam'?examState.students:state.students;}
+function cardFileParts(name){
+  const base=String(name||'答卷').replace(/\.[^.]+$/,'');
+  const m=base.match(/^(.*?)(?:[_\-\s]*(?:第\s*(\d+)\s*页|p(?:age)?[_\-\s]*(\d+)|[_\-\s]+(\d+)))$/i);
+  return m?{group:m[1]||base,pageNo:+(m[2]||m[3]||m[4])}:{group:base,pageNo:1};
+}
+function readFileDataUrl(file){
+  return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=()=>reject(new Error('读取失败：'+file.name));r.readAsDataURL(file);});
+}
+async function normalizeCardImage(dataUrl,maxSide=2400){
+  const img=await new Promise((resolve,reject)=>{const im=new Image();im.onload=()=>resolve(im);im.onerror=()=>reject(new Error('图片解码失败'));im.src=dataUrl;});
+  const scale=Math.min(1,maxSide/Math.max(img.naturalWidth,img.naturalHeight));
+  const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(img.naturalWidth*scale));canvas.height=Math.max(1,Math.round(img.naturalHeight*scale));
+  const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(img,0,0,canvas.width,canvas.height);
+  return canvas.toDataURL('image/jpeg',0.92);
+}
+async function expandCardFiles(files){
+  const pages=[];
+  for(let fi=0;fi<files.length;fi++){
+    const f=files[fi], isPdf=f.type==='application/pdf'||/\.pdf$/i.test(f.name);
+    if(f.size>30*1024*1024)throw new Error('文件超过 30MB：'+f.name);
+    if(isPdf){
+      if(!window.pdfjsLib)throw new Error('PDF 组件未加载，请检查网络后重试');
+      pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+      const pdf=await pdfjsLib.getDocument({data:await f.arrayBuffer()}).promise;
+      for(let n=1;n<=pdf.numPages;n++){
+        const page=await pdf.getPage(n);let viewport=page.getViewport({scale:2});
+        if(Math.max(viewport.width,viewport.height)>2400)viewport=page.getViewport({scale:2*2400/Math.max(viewport.width,viewport.height)});
+        const canvas=document.createElement('canvas');canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
+        await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;
+        pages.push({group:'pdf-'+fi+'-'+f.name,pageNo:n,totalPages:pdf.numPages,fileName:f.name+' · 第'+n+'页',dataUrl:canvas.toDataURL('image/jpeg',0.92)});
+      }
+    }else{
+      const part=cardFileParts(f.name);
+      pages.push({group:'img-'+part.group,pageNo:part.pageNo,totalPages:null,fileName:f.name,dataUrl:await normalizeCardImage(await readFileDataUrl(f))});
+    }
+  }
+  const groups=new Map();
+  pages.forEach(p=>{if(!groups.has(p.group))groups.set(p.group,[]);groups.get(p.group).push(p);});
+  return Array.from(groups.values()).map(ps=>ps.sort((a,b)=>a.pageNo-b.pageNo||a.fileName.localeCompare(b.fileName,'zh-CN',{numeric:true})));
+}
+function normalizeCardPage(raw,questions,page){
+  const byNum=new Map(questions.map(q=>[cardQuestionNum(q.num),q]));
+  const list=Array.isArray(raw.answers)?raw.answers:Object.entries(raw.answers&&typeof raw.answers==='object'?raw.answers:{}).map(([num,v])=>({num,...(v&&typeof v==='object'?v:{value:v})}));
+  const answers={},unknown=[];const seen=new Set(Array.isArray(raw.seen)?raw.seen.map(cardQuestionNum):[]);
+  list.forEach(a=>{
+    const num=cardQuestionNum(a.num??a.questionNum??a.question??''),q=byNum.get(num);
+    const value=Array.isArray(a.value)?a.value.join(''):String(a.value??a.answer??'').trim();
+    if(!q){if(num)unknown.push({num,value});return;}
+    seen.add(num);
+    answers[q.id]={value,status:cardStatus(a.status,value),confidence:cardConfidence(a.confidence),source:'ai',note:String(a.note||''),pageId:page.id};
   });
-  return {name, examNo, answers};
+  return {name:String(raw.name||'').trim(),examNo:String(raw.examNo??raw.exam_no??'').trim(),
+    attendance:['present','absent','unknown'].includes(raw.attendance)?raw.attendance:(raw.absent===true?'absent':'unknown'),
+    pageNo:page.pageNo||Number(raw.pageNo)||1,totalPages:Number(raw.totalPages)||page.totalPages||null,
+    answers,seen:Array.from(seen),unknown,layout:String(raw.layout||'').trim()};
+}
+async function recognizeAnswerCardPage(page,questions){
+  const qDesc=questions.map(q=>'题号 '+q.num+'（'+(q.objective?'客观题':'主观题')+'）：'+(q.text||'').slice(0,100)).join('\n');
+  const sys='你是严谨的通用答题卡识别器。你能分析未见过的单栏、多栏、横排、竖排、填涂卡和主观题答题区域。你只提取可见事实，绝不猜测。只输出合法 JSON。';
+  const user='请识别这一页答题卡。不要依赖固定坐标或模板，先理解印刷题号、选项标签、填涂区、准考证号网格和作答区的对应关系。图像可能旋转、倾斜或有阴影。\n需要寻找的题号：\n'+qDesc+'\n\n规则：\n1. 姓名、手写或填涂考号无法确定就留空并降低置信度；不得编造。\n2. attendance 只能是 present/absent/unknown；仅缺考标记明确时才用 absent。\n3. 每个实际看到的题目都输出，即使空白。status 用 ok/blank/unclear/multiple。单选出现多个填涂必须用 multiple；淡涂、擦除或映射不确定用 unclear。\n4. 选择题 value 只写选项字母（多选按字母顺序），判断题写 正确/错误，其余题目完整转写作答内容，保留公式。未看到某题不要把该题放进 answers，但要尽量在 seen 中列出本页实际出现的题号。\n5. confidence 为 0 到 1，表示该字段证据可靠程度，不要因为答案看似合理而提高。\n6. seen 列出本页能确认版式位置的所有目标题号；pageNo/totalPages 按页面上印刷信息判断，无法判断则分别使用 '+page.pageNo+' 和 null。\n输出：{"name":"","examNo":"","attendance":"unknown","pageNo":'+page.pageNo+',"totalPages":null,"layout":"版式简述","seen":["题号"],"answers":[{"num":"题号","value":"","status":"blank","confidence":0,"note":""}]}';
+  const raw=await callAI([{role:'system',content:sys},{role:'user',content:[{type:'text',text:user},{type:'image_url',image_url:{url:page.dataUrl}}]}],{json:true});
+  const parsed=parseAIJson(raw);
+  if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('识别返回格式异常');
+  return normalizeCardPage(parsed,questions,page);
+}
+function mergeCardStudent(student,questions){
+  const r=student.recognition,merged={};let identities={name:[],examNo:[],attendance:[]};
+  r.pages.forEach(p=>{
+    const x=p.result;if(!x)return;
+    ['name','examNo','attendance'].forEach(k=>{if(x[k]&&x[k]!=='unknown')identities[k].push(x[k]);});
+  });
+  const name=identities.name[0]||student.name||'',examNo=identities.examNo[0]||student.examNo||'';
+  const attendance=identities.attendance.includes('absent')&&identities.attendance.includes('present')?'unknown':(identities.attendance[0]||student.attendance||'unknown');
+  student.name=name;student.examNo=examNo;student.attendance=attendance;
+  questions.forEach(q=>merged[q.id]={value:'',status:'not_seen',confidence:0,source:'ai',pages:[]});
+  r.pages.slice().sort((a,b)=>((a.result&&a.result.pageNo)||a.pageNo)-((b.result&&b.result.pageNo)||b.pageNo)).forEach(p=>{
+    const x=p.result;if(!x)return;
+    questions.forEach(q=>{
+      const incoming=x.answers[q.id];if(!incoming)return;
+      const cur=merged[q.id];
+      if(cur.status==='not_seen'){merged[q.id]={...incoming,pages:[p.id]};return;}
+      if(incoming.status==='blank')return;
+      if(cur.status==='blank'){merged[q.id]={...incoming,pages:[p.id]};return;}
+      if(!q.objective&&cur.status==='ok'&&incoming.status==='ok'){
+        cur.value=(cur.value+'\n\n【续第 '+((x.pageNo||p.pageNo))+' 页】\n'+incoming.value).trim();cur.confidence=Math.min(cur.confidence,incoming.confidence);cur.pages.push(p.id);
+      }else if(cur.value!==incoming.value||cur.status!==incoming.status){merged[q.id]={...cur,status:'conflict',confidence:0,note:'多页识别结果冲突，请对照原图确认',pages:(cur.pages||[]).concat(p.id)};}
+    });
+  });
+  r.answers=merged;r.identityConflict=(new Set(identities.name).size>1)||(new Set(identities.examNo).size>1);
+  r.attendanceConflict=(new Set(identities.attendance).size>1);
+  syncCardAnswers(student,questions);validateCardStudent(student,questions);return student;
+}
+function syncCardAnswers(student,questions){
+  if(!student.recognition)return;
+  if(student.answers)questions.forEach(q=>{const a=student.recognition.answers[q.id]||{};student.answers[q.id]=a.status==='blank'?'':(a.value||'');});
+  else {const a=student.recognition.answers[questions[0].id]||{};student.text=a.status==='blank'?'':(a.value||'');}
+}
+function validateCardStudent(student,questions){
+  const r=student.recognition;if(!r)return [];
+  const issues=(r.issues||[]).filter(i=>i.code==='DUPLICATE_EXAM_NO');const add=(code,message,severity='block',qid='')=>issues.push({code,message,severity,qid});
+  r.pages.forEach(p=>{if(p.error)add('RECOGNITION_FAILED',p.fileName+'：'+p.error);(p.result&&p.result.unknown||[]).forEach(a=>add('UNKNOWN_QUESTION',p.fileName+' 出现无法映射的第 '+a.num+' 题','warn'));});
+  const pageNos=r.pages.map(p=>p.result&&p.result.pageNo||p.pageNo).filter(n=>Number.isFinite(n));
+  const total=Math.max(...r.pages.map(p=>p.result&&p.result.totalPages||0));
+  const seenNos=new Set();pageNos.forEach(n=>{if(seenNos.has(n))add('DUPLICATE_PAGE','出现重复的第 '+n+' 页');seenNos.add(n);});
+  if(total>1)for(let n=1;n<=total;n++)if(!seenNos.has(n))add('PAGE_MISSING','缺少第 '+n+' 页，共 '+total+' 页');
+  if(r.identityConflict)add('IDENTITY_CONFLICT','不同页面的姓名或考号不一致');
+  if(r.attendanceConflict)add('ABSENT_UNCLEAR','不同页面的到考状态不一致');
+  if(student.attendance==='unknown')add('ABSENT_UNCLEAR','到考状态无法确定，请人工确认','warn');
+  const answered=[];
+  questions.forEach(q=>{
+    const a=r.answers[q.id]||{status:'not_seen',value:'',confidence:0};
+    if(a.value&&a.status!=='blank')answered.push(q.num);
+    if(['not_seen','unclear','conflict'].includes(a.status))add(a.status==='not_seen'?'QUESTION_NOT_SEEN':'ANSWER_'+a.status.toUpperCase(),'第 '+q.num+' 题：'+({not_seen:'未在任何页面确认其作答区域',unclear:'填涂或内容无法确定',conflict:'多页答案冲突'}[a.status]),'block',q.id);
+    if(a.status==='multiple'&&!/多选/.test(q.type||''))add('MULTI_MARK_SINGLE','第 '+q.num+' 题疑似单选多涂，请确认','block',q.id);
+    if(/单选/.test(q.type||'')&&/^[A-Z]{2,}$/i.test(String(a.value||'').replace(/\s/g,'')))add('MULTI_MARK_SINGLE','第 '+q.num+' 题识别到多个选项，请确认是否多涂','block',q.id);
+    if(a.status==='ok'&&a.confidence<CARD_REVIEW_CONFIDENCE)add('LOW_CONFIDENCE','第 '+q.num+' 题识别置信度较低（'+Math.round(a.confidence*100)+'%）','warn',q.id);
+    if(q.objective&&/选择|单选|多选/.test(q.type||'')&&a.value&&!/^[A-Z]+$/i.test(a.value.replace(/\s/g,'')))add('INVALID_OPTION','第 '+q.num+' 题选项格式异常，请确认','block',q.id);
+  });
+  if(student.attendance==='absent'&&answered.length)add('ABSENT_WITH_ANSWERS','标记缺考但第 '+answered.join('、')+' 题有作答内容');
+  r.issues=issues;
+  if(!issues.length&&r.reviewStatus==='pending')r.reviewStatus='clean';
+  return issues;
+}
+function validateAllCards(context){
+  const students=cardStudents(context),qs=context==='exam'?examState.questions.filter(q=>q.text.trim()):currentGradeCardQuestions();
+  const byExamNo=new Map();students.forEach(s=>{if(s.recognition){s.recognition.issues=[];validateCardStudent(s,qs);if(s.examNo&&s.attendance!=='absent'){if(!byExamNo.has(s.examNo))byExamNo.set(s.examNo,[]);byExamNo.get(s.examNo).push(s);}}});
+  byExamNo.forEach(list=>{if(list.length>1)list.forEach(s=>s.recognition.issues.push({code:'DUPLICATE_EXAM_NO',message:'考号 '+s.examNo+' 与其他答卷重复',severity:'block',qid:''}));});
+  return students.filter(s=>s.recognition);
+}
+function cardBlockReason(student,questions){
+  const r=student.recognition;if(!r)return '';
+  const issues=validateCardStudent(student,questions);
+  if(issues.some(i=>i.severity==='block'))return '有 '+issues.filter(i=>i.severity==='block').length+' 项阻断问题待复核';
+  if(issues.length&&r.reviewStatus!=='confirmed')return '请打开答题卡复核并确认识别结果';
+  return '';
+}
+async function importAnswerCards(files,context){
+  const questions=context==='exam'?examState.questions.filter(q=>q.text.trim()):currentGradeCardQuestions();
+  if(!questions.length||!questions[0].text){toast('请先填写并解析题目','err');return;}
+  if(!state.settings.apiKey){toast('请先配置 API Key','err');switchView('settings');return;}
+  const prog=$(context==='exam'?'#examSheetProgress':'#gradeCardProgress');
+  const btn=$(context==='exam'?'#btnUploadExamSheets':'#btnUploadGradeCards');btn.disabled=true;
+  const imported=[];
+  try{
+    prog.style.color='var(--muted)';prog.textContent='正在展开图片 / PDF 页面…';
+    const groups=await expandCardFiles(files);let done=0,total=groups.reduce((n,g)=>n+g.length,0);
+    for(let gi=0;gi<groups.length;gi++){
+      const pages=groups[gi].map(p=>({...p,id:uid(),result:null,error:''}));
+      const fallback=pages[0].fileName.replace(/\.[^.]+$/,'').replace(/\s*·.*$/,'').replace(/[_\-\s]+(?:第?\d+页?|p(?:age)?[_\-\s]*\d+)$/i,'');
+      const student=context==='exam'?{id:uid(),name:fallback,examNo:'',attendance:'unknown',answers:{}}:{id:uid(),name:fallback,examNo:'',attendance:'unknown',text:'',images:[]};
+      student.recognition={version:1,context,questionText:questions[0].text,pages,answers:{},issues:[],reviewStatus:'pending'};
+      for(let pi=0;pi<pages.length;pi++){
+        done++;prog.textContent='正在识别第 '+(gi+1)+'/'+groups.length+' 份 · 总页面 '+done+'/'+total+'：'+pages[pi].fileName;
+        try{pages[pi].result=await recognizeAnswerCardPage(pages[pi],questions);}catch(e){pages[pi].error=e.message;}
+      }
+      mergeCardStudent(student,questions);
+      if(context==='grade')student.images=pages.map(p=>p.dataUrl).filter(Boolean);
+      cardStudents(context).push(student);imported.push(student);
+    }
+    validateAllCards(context);
+    if(context==='exam'){saveExam();renderExamStudents();}else renderStudents();
+    const issueCount=imported.reduce((n,s)=>n+s.recognition.issues.length,0);
+    prog.textContent='已导入 '+imported.length+' 名学生、'+total+' 页；'+(issueCount?'有 '+issueCount+' 项提示，请完成复核。':'识别检查通过，仍建议抽查原图。');
+    prog.style.color=issueCount?'var(--amber)':'var(--green)';
+    toast('答题卡识别完成','ok');
+    if(imported.length)openCardReview(context,imported.find(s=>s.recognition.issues.length)?.id||imported[0].id);
+  }catch(e){prog.textContent='导入失败：'+e.message;prog.style.color='var(--red)';toast(e.message,'err');}
+  finally{btn.disabled=false;}
+}
+function onUploadExamSheets(e){const files=Array.from(e.target.files||[]);e.target.value='';if(files.length)importAnswerCards(files,'exam');}
+function onUploadGradeCards(e){const files=Array.from(e.target.files||[]);e.target.value='';if(files.length)importAnswerCards(files,'grade');}
+function openCardReview(context,studentId){
+  const students=cardStudents(context).filter(s=>s.recognition);
+  if(!students.length){toast('尚未导入答题卡','err');return;}
+  const questions=context==='exam'?examState.questions.filter(q=>q.text.trim()):currentGradeCardQuestions();
+  cardReviewCtx={context,questions,studentId:studentId||students[0].id};
+  $('#cardReviewModal').classList.add('show');renderCardReview();
+}
+function reviewStudent(){return cardReviewCtx?cardStudents(cardReviewCtx.context).find(s=>s.id===cardReviewCtx.studentId):null;}
+function renderCardReview(){
+  const s=reviewStudent();if(!s)return;
+  const students=cardStudents(cardReviewCtx.context).filter(x=>x.recognition);
+  $('#cardReviewStudent').innerHTML=students.map(x=>'<option value="'+x.id+'" '+(x.id===s.id?'selected':'')+'>'+esc(x.name||x.examNo||'未命名')+'</option>').join('');
+  $('#cardReviewName').value=s.name||'';$('#cardReviewExamNo').value=s.examNo||'';$('#cardReviewAttendance').value=s.attendance||'unknown';
+  const pages=s.recognition.pages;
+  $('#cardReviewPage').innerHTML=pages.map((p,i)=>'<option value="'+p.id+'">第 '+((p.result&&p.result.pageNo)||p.pageNo||i+1)+' 页 · '+esc(p.fileName)+'</option>').join('');
+  renderCardReviewPage();renderCardReviewFields();
+}
+function renderCardReviewPage(){
+  const s=reviewStudent();if(!s)return;const pages=s.recognition.pages;
+  const id=$('#cardReviewPage').value||((pages[0]||{}).id),p=pages.find(x=>x.id===id)||pages[0];
+  if(!p){$('#cardReviewImage').removeAttribute('src');return;}
+  $('#cardReviewPage').value=p.id;$('#cardReviewImage').src=p.dataUrl||'';
+  $('#cardReviewImage').style.display=p.dataUrl?'':'none';
+  $('#cardReviewPageInfo').textContent=p.fileName+(p.result&&p.result.layout?' · '+p.result.layout:'')+(p.dataUrl?'':' · 原图未持久化，请重新导入后查看');
+}
+function renderCardReviewFields(){
+  const s=reviewStudent();if(!s)return;const issues=validateCardStudent(s,cardReviewCtx.questions);
+  const blocks=issues.filter(i=>i.severity==='block').length;
+  $('#cardReviewSummary').textContent=blocks?blocks+' 项必须处理':(issues.length?issues.length+' 项提示，可确认后继续':'检查通过');
+  $('#cardReviewIssues').innerHTML=issues.length?issues.map(i=>'<div class="review-issue '+(i.severity==='block'?'block':'')+'">'+esc(i.message)+'</div>').join(''):'<div class="hint">未发现结构性问题；仍请抽查填涂与考号。</div>';
+  $('#cardReviewAnswers').innerHTML=cardReviewCtx.questions.map(q=>{
+    const a=s.recognition.answers[q.id]||{value:'',status:'not_seen',confidence:0};
+    return '<div class="review-answer"><div class="qnum">第 '+esc(q.num)+' 题</div><div><textarea data-card-q="'+q.id+'" placeholder="人工修正答案">'+esc(a.value||'')+'</textarea><div class="hint">'+(a.source==='manual'?'人工修正':'AI 识别')+' · 置信度 '+Math.round((a.confidence||0)*100)+'%'+(a.note?' · '+esc(a.note):'')+'</div></div><select data-card-status="'+q.id+'">'+[['ok','已确认'],['blank','确认空白'],['unclear','无法辨认'],['multiple','多涂'],['conflict','多页冲突'],['not_seen','未找到题目']].map(([v,t])=>'<option value="'+v+'" '+(a.status===v?'selected':'')+'>'+t+'</option>').join('')+'</select></div>';
+  }).join('');
+}
+function persistCardContext(){if(cardReviewCtx.context==='exam'){saveExam();renderExamStudents();}else renderStudents();}
+function closeCardReview(){if(cardReviewCtx)persistCardContext();$('#cardReviewModal').classList.remove('show');cardReviewCtx=null;}
+function bindCardReviewEvents(){
+  $('#cardReviewStudent').addEventListener('change',e=>{cardReviewCtx.studentId=e.target.value;renderCardReview();});
+  $('#cardReviewPage').addEventListener('change',renderCardReviewPage);
+  $('#cardReviewName').addEventListener('input',e=>{const s=reviewStudent();if(s){s.name=e.target.value;s.recognition.identityConflict=false;}});
+  $('#cardReviewExamNo').addEventListener('input',e=>{const s=reviewStudent();if(s){s.examNo=e.target.value;s.recognition.identityConflict=false;}});
+  $('#cardReviewAttendance').addEventListener('change',e=>{const s=reviewStudent();if(s){s.attendance=e.target.value;s.recognition.attendanceConflict=false;renderCardReviewFields();}});
+  $('#cardReviewAnswers').addEventListener('input',e=>{const qid=e.target.dataset.cardQ;if(!qid)return;const s=reviewStudent(),a=s.recognition.answers[qid];a.value=e.target.value;a.source='manual';a.confidence=1;if(a.status!=='ok'&&e.target.value.trim())a.status='ok';syncCardAnswers(s,cardReviewCtx.questions);});
+  $('#cardReviewAnswers').addEventListener('change',e=>{const qid=e.target.dataset.cardStatus;if(!qid)return;const s=reviewStudent(),a=s.recognition.answers[qid];a.status=e.target.value;a.source='manual';a.confidence=1;syncCardAnswers(s,cardReviewCtx.questions);renderCardReviewFields();});
+  $('#btnCardReviewClose').onclick=closeCardReview;
+  $('#btnCardReviewSave').onclick=()=>{
+    const s=reviewStudent();if(!s)return;const issues=validateAllCards(cardReviewCtx.context).find(x=>x.id===s.id).recognition.issues;
+    if(issues.some(i=>i.severity==='block')){s.recognition.reviewStatus='pending';renderCardReviewFields();toast('仍有必须处理的问题，请修正答案或状态','err');persistCardContext();return;}
+    s.recognition.reviewStatus='confirmed';s.recognition.reviewedAt=new Date().toISOString();syncCardAnswers(s,cardReviewCtx.questions);persistCardContext();toast('已确认 '+(s.name||s.examNo||'该生')+' 的识别结果','ok');closeCardReview();
+  };
+  $('#btnCardReRecognize').onclick=async()=>{
+    const s=reviewStudent();if(!s)return;const p=s.recognition.pages.find(x=>x.id===$('#cardReviewPage').value);if(!p||!p.dataUrl){toast('原图不可用，请重新导入','err');return;}
+    const btn=$('#btnCardReRecognize');btn.disabled=true;btn.textContent='识别中…';
+    try{p.result=await recognizeAnswerCardPage(p,cardReviewCtx.questions);p.error='';mergeCardStudent(s,cardReviewCtx.questions);validateAllCards(cardReviewCtx.context);renderCardReview();toast('本页已重新识别','ok');}catch(e){p.error=e.message;validateCardStudent(s,cardReviewCtx.questions);renderCardReviewFields();toast(e.message,'err');}finally{btn.disabled=false;btn.textContent='重新识别本页';}
+  };
 }
 function bindExamEvents(){
   $('#examTitle').addEventListener('input',e=>{examState.title=e.target.value;saveExam();});
@@ -2235,11 +2505,16 @@ function bindExamEvents(){
   $('#examStudents').addEventListener('input',e=>{
     const el=e.target; if(!el.dataset.s) return;
     const s=examState.students.find(x=>x.id===el.dataset.s); if(!s) return;
-    if(el.dataset.f==='name') s.name=el.value; else s.answers[el.dataset.q]=el.value;
+    if(el.dataset.f==='name') s.name=el.value; else {
+      s.answers[el.dataset.q]=el.value;
+      if(s.recognition&&s.recognition.answers[el.dataset.q]){const a=s.recognition.answers[el.dataset.q];a.value=el.value;a.status=el.value.trim()?'ok':'blank';a.source='manual';a.confidence=1;s.recognition.reviewStatus='pending';validateCardStudent(s,examState.questions);}
+    }
     saveExam();
   });
   $('#examStudents').addEventListener('click',e=>{
-    const b=e.target.closest('button[data-act="dels"]'); if(!b) return;
+    const b=e.target.closest('button[data-act]'); if(!b) return;
+    if(b.dataset.act==='review'){openCardReview('exam',b.dataset.s);return;}
+    if(b.dataset.act!=='dels')return;
     examState.students=examState.students.filter(x=>x.id!==b.dataset.s);
     saveExam(); renderExamStudents();
   });
@@ -2254,6 +2529,10 @@ function bindExamEvents(){
   // 答卷图片批量导入
   $('#btnUploadExamSheets').onclick=()=>$('#examSheetFiles').click();
   $('#examSheetFiles').addEventListener('change',onUploadExamSheets);
+  $('#btnReviewExamCards').onclick=()=>openCardReview('exam');
+  $('#btnUploadGradeCards').onclick=()=>$('#gradeCardFiles').click();
+  $('#gradeCardFiles').addEventListener('change',onUploadGradeCards);
+  $('#btnReviewGradeCards').onclick=()=>openCardReview('grade');
   // 整卷阅卷：手动 / 上传试卷切换
   $('#examInputMode').addEventListener('click',e=>{
     const b=e.target.closest('.seg-btn'); if(!b) return;
@@ -2263,7 +2542,7 @@ function bindExamEvents(){
 
 /* ================= 学情分析 ================= */
 function renderAnalysis(){
-  const recs=state.records;
+  const recs=state.records.filter(r=>r&&r.score!=null&&r.rate!=null&&Number.isFinite(Number(r.score))&&Number.isFinite(Number(r.rate)));
   const empty=$('#analysisEmpty'), body=$('#analysisBody');
   if(!recs.length){empty.style.display='';body.style.display='none';return;}
   empty.style.display='none';body.style.display='';
@@ -2307,9 +2586,9 @@ function renderAnalysis(){
 function exportCsv(){
   const recs=state.gradeResults.length?state.gradeResults:state.records;
   if(!recs.length){toast('暂无记录可导出','err');return;}
-  const head=['学生','科目','题目','得分','满分','得分率%','扣分原因','评语','建议','时间'];
+  const head=['学生','考号','科目','题目','得分','满分','得分率%','状态','扣分原因','评语','建议','时间'];
   const esc2=s=>'"'+String(s??'').replace(/"/g,'""')+'"';
-  const rows=recs.map(r=>[r.student,r.subject,r.question,r.score,r.fullScore,r.rate,r.deduction,r.comment,r.suggestion,r.time].map(esc2).join(','));
+  const rows=recs.map(r=>[r.student,r.examNo||'',r.subject,r.question,r.score??'',r.fullScore,r.rate??'',r.status==='absent'?'缺考':(r.status==='incomplete'?'未完成':'已完成'),r.deduction,r.comment,r.suggestion,r.time].map(esc2).join(','));
   const csv='\ufeff'+head.map(esc2).join(',')+'\n'+rows.join('\n');
   download('YJAI阅卷记录.csv',csv,'text/csv');
 }
@@ -2317,10 +2596,10 @@ function exportMd(){
   const recs=state.gradeResults.length?state.gradeResults:state.records;
   if(!recs.length){toast('暂无记录可导出','err');return;}
   let md='# YJAI 学情分析报告\n\n';
-  const n=recs.length,avg=recs.reduce((a,b)=>a+b.score,0)/n;
-  md+=`- 阅卷份数：${n}\n- 平均分：${avg.toFixed(1)}\n- 最高分：${Math.max(...recs.map(r=>r.score))}\n- 最低分：${Math.min(...recs.map(r=>r.score))}\n\n`;
-  md+='## 成绩明细\n\n| 学生 | 科目 | 得分 | 得分率 | 评语 |\n|---|---|---|---|---|\n';
-  recs.forEach(r=>md+=`| ${r.student} | ${r.subject} | ${r.score}/${r.fullScore} | ${r.rate}% | ${r.comment||''} |\n`);
+  const validRecs=recs.filter(r=>r.score!=null&&r.rate!=null),n=validRecs.length,avg=n?validRecs.reduce((a,b)=>a+b.score,0)/n:0;
+  md+=`- 记录数：${recs.length}\n- 有效评分：${n}\n- 平均分：${avg.toFixed(1)}\n- 最高分：${n?Math.max(...validRecs.map(r=>r.score)):'—'}\n- 最低分：${n?Math.min(...validRecs.map(r=>r.score)):'—'}\n\n`;
+  md+='## 成绩明细\n\n| 学生 | 科目 | 得分 | 得分率 | 状态 | 评语 |\n|---|---|---|---|---|---|\n';
+  recs.forEach(r=>md+=`| ${r.student} | ${r.subject} | ${r.score??'—'}/${r.fullScore} | ${r.rate==null?'—':r.rate+'%'} | ${r.status==='absent'?'缺考':(r.status==='incomplete'?'未完成':'已完成')} | ${r.comment||''} |\n`);
   md+='\n## 失分点汇总\n\n';
   recs.filter(r=>r.deduction).forEach(r=>md+=`- **${r.student}**：${r.deduction}\n`);
   download('YJAI学情分析.md',md,'text/markdown');
@@ -2523,6 +2802,7 @@ async function init(){
   bindStudents();
   bindEvents();
   bindExamEvents();
+  bindCardReviewEvents();
   initUpdater();
   // 默认给一个空学生
   addStudent();
