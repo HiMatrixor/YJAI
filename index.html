@@ -11,7 +11,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/mhchem.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<script defer src="pdf.min.js"></script>
 <style>
   :root{
     --bg:#0e1116; --bg2:#12161d; --panel:#171c24; --panel2:#1c232e;
@@ -1048,7 +1048,7 @@ async function extractDocxText(file){
 }
 async function extractPdfText(file){
   if(!window.pdfjsLib) throw new Error('pdf.js 未加载，请检查网络');
-  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';
   const buf = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({data: buf}).promise;
   const parts = [];
@@ -2259,6 +2259,7 @@ async function normalizeCardImage(dataUrl,maxSide=2400){
   const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(img,0,0,canvas.width,canvas.height);
   return canvas.toDataURL('image/jpeg',0.92);
 }
+function withTimeout(p,ms,msg){return Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(msg||'处理超时')),ms))]);}
 async function expandCardFiles(files){
   const pages=[];
   for(let fi=0;fi<files.length;fi++){
@@ -2266,8 +2267,8 @@ async function expandCardFiles(files){
     if(f.size>30*1024*1024)throw new Error('文件超过 30MB：'+f.name);
     if(isPdf){
       if(!window.pdfjsLib)throw new Error('PDF 组件未加载，请检查网络后重试');
-      pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
-      const pdf=await pdfjsLib.getDocument({data:await f.arrayBuffer()}).promise;
+      pdfjsLib.GlobalWorkerOptions.workerSrc='pdf.worker.min.js';
+      const pdf=await withTimeout(pdfjsLib.getDocument({data:await f.arrayBuffer()}).promise,60000,'PDF 解析超时（'+f.name+'），请确认文件未损坏');
       for(let n=1;n<=pdf.numPages;n++){
         const page=await pdf.getPage(n);let viewport=page.getViewport({scale:2});
         if(Math.max(viewport.width,viewport.height)>2400)viewport=page.getViewport({scale:2*2400/Math.max(viewport.width,viewport.height)});

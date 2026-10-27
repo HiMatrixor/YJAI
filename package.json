@@ -1,6 +1,6 @@
 {
   "name": "yjai",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "YJAI - AI 阅卷助手（本地桌面版）",
   "main": "main.js",
   "author": "YJAI",
@@ -27,6 +27,8 @@
       "preload.js",
       "index.html",
       "browser.html",
+      "pdf.min.js",
+      "pdf.worker.min.js",
       "icon.ico",
       "pay-wechat.png",
       "pay-alipay.jpg"
