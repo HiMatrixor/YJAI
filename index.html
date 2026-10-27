@@ -12,6 +12,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script defer src="pdf.min.js"></script>
+<script defer src="pdf.worker.min.js"></script>
 <style>
   :root{
     --bg:#0e1116; --bg2:#12161d; --panel:#171c24; --panel2:#1c232e;
@@ -825,6 +826,11 @@ const $$ = s => document.querySelectorAll(s);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function toast(msg,type=''){const t=$('#toast');if(!t){console.log('[toast]',msg);return;}t.textContent=msg;t.className='toast show '+type;clearTimeout(t._t);t._t=setTimeout(()=>t.className='toast',2600);}
+/* 全局兜底：任何未捕获异常/异步错误都弹提示，避免「点了没反应」却看不到原因 */
+try{
+  window.addEventListener('unhandledrejection',e=>{const m=(e.reason&&e.reason.message)?e.reason.message:String(e.reason||'');console.error('[unhandledrejection]',e.reason);if(m)toast('发生错误：'+m,'err');});
+  window.addEventListener('error',e=>{const m=e.message||'';if(m)toast('发生错误：'+m,'err');});
+}catch(_){}
 function save(k,v){try{localStorage.setItem('yjai_'+k,JSON.stringify(v));}catch(e){toast('存储失败：'+e.message,'err');}}
 function load(k,d){try{const v=localStorage.getItem('yjai_'+k);return v?JSON.parse(v):d;}catch(e){return d;}}
 function loadTheme(){ try{return localStorage.getItem('yjai_theme')||'dark';}catch(e){return 'dark';} }
@@ -2305,7 +2311,7 @@ async function recognizeAnswerCardPage(page,questions){
   const qDesc=questions.map(q=>'题号 '+q.num+'（'+(q.objective?'客观题':'主观题')+'）：'+(q.text||'').slice(0,100)).join('\n');
   const sys='你是严谨的通用答题卡识别器。你能分析未见过的单栏、多栏、横排、竖排、填涂卡和主观题答题区域。你只提取可见事实，绝不猜测。只输出合法 JSON。';
   const user='请识别这一页答题卡。不要依赖固定坐标或模板，先理解印刷题号、选项标签、填涂区、准考证号网格和作答区的对应关系。图像可能旋转、倾斜或有阴影。\n需要寻找的题号：\n'+qDesc+'\n\n规则：\n1. 姓名、手写或填涂考号无法确定就留空并降低置信度；不得编造。\n2. attendance 只能是 present/absent/unknown；仅缺考标记明确时才用 absent。\n3. 每个实际看到的题目都输出，即使空白。status 用 ok/blank/unclear/multiple。单选出现多个填涂必须用 multiple；淡涂、擦除或映射不确定用 unclear。\n4. 选择题 value 只写选项字母（多选按字母顺序），判断题写 正确/错误，其余题目完整转写作答内容，保留公式。未看到某题不要把该题放进 answers，但要尽量在 seen 中列出本页实际出现的题号。\n5. confidence 为 0 到 1，表示该字段证据可靠程度，不要因为答案看似合理而提高。\n6. seen 列出本页能确认版式位置的所有目标题号；pageNo/totalPages 按页面上印刷信息判断，无法判断则分别使用 '+page.pageNo+' 和 null。\n输出：{"name":"","examNo":"","attendance":"unknown","pageNo":'+page.pageNo+',"totalPages":null,"layout":"版式简述","seen":["题号"],"answers":[{"num":"题号","value":"","status":"blank","confidence":0,"note":""}]}';
-  const raw=await callAI([{role:'system',content:sys},{role:'user',content:[{type:'text',text:user},{type:'image_url',image_url:{url:page.dataUrl}}]}],{json:true});
+  const raw=await withTimeout(callAI([{role:'system',content:sys},{role:'user',content:[{type:'text',text:user},{type:'image_url',image_url:{url:page.dataUrl}}]}],{json:true}),180000,'单页识别超时（模型响应过慢或图片过大）');
   const parsed=parseAIJson(raw);
   if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('识别返回格式异常');
   return normalizeCardPage(parsed,questions,page);
@@ -2414,8 +2420,8 @@ async function importAnswerCards(files,context){
   }catch(e){prog.textContent='导入失败：'+e.message;prog.style.color='var(--red)';toast(e.message,'err');}
   finally{btn.disabled=false;}
 }
-function onUploadExamSheets(e){const files=Array.from(e.target.files||[]);e.target.value='';if(files.length)importAnswerCards(files,'exam');}
-function onUploadGradeCards(e){const files=Array.from(e.target.files||[]);e.target.value='';if(files.length)importAnswerCards(files,'grade');}
+function onUploadExamSheets(e){const files=Array.from(e.target.files||[]);e.target.value='';if(!files.length)return;toast('已选择 '+files.length+' 个文件，开始导入…');importAnswerCards(files,'exam').catch(err=>toast('导入失败：'+err.message,'err'));}
+function onUploadGradeCards(e){const files=Array.from(e.target.files||[]);e.target.value='';if(!files.length)return;toast('已选择 '+files.length+' 个文件，开始导入…');importAnswerCards(files,'grade').catch(err=>toast('导入失败：'+err.message,'err'));}
 function openCardReview(context,studentId){
   const students=cardStudents(context).filter(s=>s.recognition);
   if(!students.length){toast('尚未导入答题卡','err');return;}
