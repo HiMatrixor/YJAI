@@ -742,6 +742,10 @@
       <div><label>学生</label><select id="cardReviewStudent"></select></div>
       <div><label>页面</label><select id="cardReviewPage"></select></div>
       <button class="btn btn-ghost" id="btnCardReRecognize">重新识别本页</button>
+      <div style="display:flex;gap:8px;align-items:flex-end">
+        <div style="min-width:150px"><label>合并到</label><select id="cardReviewMergeTo"></select></div>
+        <button class="btn btn-ghost" id="btnCardMerge">合并两页</button>
+      </div>
     </div>
     <div class="review-layout">
       <div class="review-page">
@@ -1071,7 +1075,7 @@ async function extractPdfText(file){
 // 将试卷文字交给 AI，识别题目（客观/主观）、答案、得分点
 async function parseExamPaper(rawText){
   const sys = '你是一位经验丰富的教研员，擅长解析试卷结构。';
-  const user = '请解析下面这份试卷/答案解析，识别所有题目。对每道题输出：题号、题型（客观题：单选/多选/填空/判断；主观题：简答/计算/论述/作文等）、题目内容、满分、标准答案（客观题必须有明确答案）、得分点（主观题分点列出）。\n\n输出严格 JSON 数组，字段：\n{"num":"题号","type":"题型","objective":true/false,"question":"题目内容","fullScore":数字,"answer":"标准答案（客观题必填）","points":"得分点（主观题，分点）"}\n\n试卷内容：\n'+rawText.slice(0, 12000);
+  const user = '请解析下面这份试卷/答案解析，识别所有题目。对每道题输出：题号、题型（客观题：单选/多选/填空/判断；主观题：简答/计算/论述/作文等）、题目内容、满分、标准答案（客观题必须有明确答案）、得分点（主观题分点列出）。\n\n注意：题目、答案、得分点中的数学/化学公式请保留为 LaTeX（行内用 $...$，独立公式用 $$...$$，化学式可用 \\ce{}），不要转成纯文本。\n\n输出严格 JSON 数组，字段：\n{"num":"题号","type":"题型","objective":true/false,"question":"题目内容","fullScore":数字,"answer":"标准答案（客观题必填）","points":"得分点（主观题，分点）"}\n\n试卷内容：\n'+rawText.slice(0, 12000);
   const content = await callAI([{role:'system',content:sys},{role:'user',content:user}],{json:true});
   const arr = parseAIJson(content);
   if(!Array.isArray(arr)) throw new Error('AI 未返回题目数组');
@@ -1990,6 +1994,7 @@ function renderExamQuestions(){
         <span class="grow" style="font-size:13px">满分
           <input type="number" data-q="${q.id}" data-f="fullScore" value="${q.fullScore}" min="0.5" step="0.5" style="width:72px;display:inline-block;margin:0 6px;padding:4px 8px" /> 分
         </span>
+        <button class="btn btn-ghost btn-sm" data-q="${q.id}" data-act="preview">👁 预览</button>
         <button class="btn btn-danger btn-sm" data-q="${q.id}" data-act="delq">删除</button>
       </div>
       <div class="stu-body">
@@ -2007,6 +2012,7 @@ function renderExamQuestions(){
           <div><label>备注</label><textarea data-q="${q.id}" data-f="note">${esc(q.note)}</textarea></div>
         </div>
         `}
+        <div class="md-preview" data-preview="${q.id}" style="display:none"></div>
       </div>
     </div>`).join('');
 }
@@ -2252,7 +2258,10 @@ function currentGradeCardQuestions(){
 }
 function cardStudents(context){return context==='exam'?examState.students:state.students;}
 function cardFileParts(name){
-  const base=String(name||'答卷').replace(/\.[^.]+$/,'');
+  let base=String(name||'答卷').replace(/\.[^.]+$/,'').trim();
+  // 正面/反面（front/back）归为同一名学生的两页
+  const fb=base.match(/^(.*?)[_\-\s]*(正面|反面|背面|前面|后面|front|back|Front|Back)$/);
+  if(fb)return {group:fb[1]||base,pageNo:/反面|背面|后面|back|Back/i.test(fb[2])?2:1};
   const m=base.match(/^(.*?)(?:[_\-\s]*(?:第\s*(\d+)\s*页|p(?:age)?[_\-\s]*(\d+)|[_\-\s]+(\d+)))$/i);
   return m?{group:m[1]||base,pageNo:+(m[2]||m[3]||m[4])}:{group:base,pageNo:1};
 }
@@ -2311,11 +2320,34 @@ function normalizeCardPage(raw,questions,page){
 async function recognizeAnswerCardPage(page,questions){
   const qDesc=questions.map(q=>'题号 '+q.num+'（'+(q.objective?'客观题':'主观题')+'）：'+(q.text||'').slice(0,100)).join('\n');
   const sys='你是严谨的通用答题卡识别器。你能分析未见过的单栏、多栏、横排、竖排、填涂卡和主观题答题区域。你只提取可见事实，绝不猜测。只输出合法 JSON。';
-  const user='请识别这一页答题卡。不要依赖固定坐标或模板，先理解印刷题号、选项标签、填涂区、准考证号网格和作答区的对应关系。图像可能旋转、倾斜或有阴影。\n需要寻找的题号：\n'+qDesc+'\n\n规则：\n1. 姓名、手写或填涂考号无法确定就留空并降低置信度；不得编造。\n2. attendance 只能是 present/absent/unknown；仅缺考标记明确时才用 absent。\n3. 每个实际看到的题目都输出，即使空白。status 用 ok/blank/unclear/multiple。单选出现多个填涂必须用 multiple；淡涂、擦除或映射不确定用 unclear。\n4. 选择题 value 只写选项字母（多选按字母顺序），判断题写 正确/错误，其余题目完整转写作答内容，保留公式。未看到某题不要把该题放进 answers，但要尽量在 seen 中列出本页实际出现的题号。\n5. confidence 为 0 到 1，表示该字段证据可靠程度，不要因为答案看似合理而提高。\n6. seen 列出本页能确认版式位置的所有目标题号；pageNo/totalPages 按页面上印刷信息判断，无法判断则分别使用 '+page.pageNo+' 和 null。\n输出：{"name":"","examNo":"","attendance":"unknown","pageNo":'+page.pageNo+',"totalPages":null,"layout":"版式简述","seen":["题号"],"answers":[{"num":"题号","value":"","status":"blank","confidence":0,"note":""}]}';
+  const user='请识别这一页答题卡。不要依赖固定坐标或模板，先理解印刷题号、选项标签、填涂区、准考证号网格和作答区的对应关系。图像可能旋转、倾斜或有阴影。\n需要寻找的题号：\n'+qDesc+'\n\n规则：\n1. 姓名、手写或填涂考号无法确定就留空并降低置信度；不得编造。\n2. attendance 只能是 present/absent/unknown；仅缺考标记明确时才用 absent。\n3. 每个实际看到的题目都输出，即使空白。status 用 ok/blank/unclear/multiple。单选出现多个填涂必须用 multiple；淡涂、擦除或映射不确定用 unclear。\n4. 选择题 value 只写被填涂的选项字母（多选按字母顺序），判断题写 正确/错误，其余题目完整转写作答内容，保留公式。未看到某题不要把该题放进 answers，但要尽量在 seen 中列出本页实际出现的题号。\n5. confidence 为 0 到 1，表示该字段证据可靠程度，不要因为答案看似合理而提高。\n6. seen 列出本页能确认版式位置的所有目标题号；pageNo/totalPages 按页面上印刷信息判断，无法判断则分别使用 '+page.pageNo+' 和 null。\n输出：{"name":"","examNo":"","attendance":"unknown","pageNo":'+page.pageNo+',"totalPages":null,"layout":"版式简述","seen":["题号"],"answers":[{"num":"题号","value":"","status":"blank","confidence":0,"note":""}]}';
   const raw=await withTimeout(callAI([{role:'system',content:sys},{role:'user',content:[{type:'text',text:user},{type:'image_url',image_url:{url:page.dataUrl}}]}],{json:true}),180000,'单页识别超时（模型响应过慢或图片过大）');
   const parsed=parseAIJson(raw);
   if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('识别返回格式异常');
-  return normalizeCardPage(parsed,questions,page);
+  const result=normalizeCardPage(parsed,questions,page);
+  // 选择题专项二次识别：提升填涂→选项映射准确率
+  try{
+    const marks=await recognizeObjectiveMarks(page,questions);
+    if(marks)Object.keys(marks).forEach(qid=>{result.answers[qid]={...result.answers[qid],...marks[qid]};});
+  }catch(e){/* 专项识别失败则沿用首次结果 */}
+  return result;
+}
+/* 选择题填涂专项识别：只判断哪个选项被涂黑，忽略印刷文字，避免误读 */
+async function recognizeObjectiveMarks(page,questions){
+  const obj=questions.filter(q=>q.objective&&/选择|单选|多选/.test(q.type||''));
+  if(!obj.length)return null;
+  const qDesc=obj.map(q=>'第 '+q.num+' 题：'+(q.text||'').slice(0,80)).join('\n');
+  const sys='你是选择题填涂识别器，专门判断答题卡上每个选择题涂黑了哪个选项。你只依据填涂痕迹判断，忽略印刷的选项字母和题干文字。';
+  const user='下面是一页答题卡，请只识别这些选择题的填涂结果：\n'+qDesc+'\n\n规则：\n1. 找到每题对应的填涂区（通常是一行或一列 A/B/C/D 选项框），判断哪个框被涂黑/填涂。\n2. value 只输出被填涂的选项字母；多选按字母升序合并（如 AB）；单选若出现多个填涂，value 输出多个字母且 status 用 multiple。\n3. 完全未填涂→value 为空、status 用 blank；填涂很淡/擦除不净/无法确定→status 用 unclear。\n4. 绝对不要根据题目内容或"哪个选项像正确答案"猜测，只看可见的填涂痕迹。\n5. confidence 为 0 到 1。\n输出严格 JSON：{"marks":[{"num":"题号","value":"A","status":"ok","confidence":0.9}]}';
+  const raw=await withTimeout(callAI([{role:'system',content:sys},{role:'user',content:[{type:'text',text:user},{type:'image_url',image_url:{url:page.dataUrl}}]}],{json:true}),120000,'选择题填涂识别超时');
+  const parsed=parseAIJson(raw);
+  const marks=Array.isArray(parsed&&parsed.marks)?parsed.marks:[];
+  const out={};const byNum=new Map(obj.map(q=>[cardQuestionNum(q.num),q]));
+  marks.forEach(m=>{
+    const q=byNum.get(cardQuestionNum(m&&(m.num||m.questionNum||'')));if(!q)return;
+    out[q.id]={value:String(m.value??'').trim(),status:cardStatus(m.status,m.value),confidence:cardConfidence(m.confidence),source:'ai',note:'选择题填涂专项识别',pageId:page.id};
+  });
+  return Object.keys(out).length?out:null;
 }
 function mergeCardStudent(student,questions){
   const r=student.recognition,merged={};let identities={name:[],examNo:[],attendance:[]};
@@ -2348,6 +2380,32 @@ function syncCardAnswers(student,questions){
   if(!student.recognition)return;
   if(student.answers)questions.forEach(q=>{const a=student.recognition.answers[q.id]||{};student.answers[q.id]=a.status==='blank'?'':(a.value||'');});
   else {const a=student.recognition.answers[questions[0].id]||{};student.text=a.status==='blank'?'':(a.value||'');}
+}
+/* 同一考号（且姓名不冲突）的多张图片自动合并为同一名学生 */
+function mergeDuplicateStudents(list,questions){
+  const byExamNo=new Map(),out=[];
+  list.forEach(s=>{
+    const key=(s.examNo||'').trim();
+    if(key&&byExamNo.has(key)){
+      const target=byExamNo.get(key);
+      const nameConflict=(s.name&&target.name&&s.name!==target.name);
+      if(nameConflict){out.push(s);return;}   // 姓名冲突时不强行合并，保留重复考号提示
+      target.recognition.pages.push(...s.recognition.pages);
+      if(s.recognition.questionText)target.recognition.questionText=s.recognition.questionText;
+      mergeCardStudent(target,questions);
+    }else{
+      if(key)byExamNo.set(key,s);
+      out.push(s);
+    }
+  });
+  return out;
+}
+/* 手动把 source 学生合并进 target 学生 */
+function mergeStudentInto(source,target,questions){
+  target.recognition.pages.push(...source.recognition.pages);
+  if(source.recognition.questionText)target.recognition.questionText=source.recognition.questionText;
+  mergeCardStudent(target,questions);
+  return target;
 }
 function validateCardStudent(student,questions){
   const r=student.recognition;if(!r)return [];
@@ -2409,15 +2467,18 @@ async function importAnswerCards(files,context){
       }
       mergeCardStudent(student,questions);
       if(context==='grade')student.images=pages.map(p=>p.dataUrl).filter(Boolean);
-      cardStudents(context).push(student);imported.push(student);
+      imported.push(student);
     }
+    // 同一考号的多张图片自动合并为一名学生
+    const final=mergeDuplicateStudents(imported,questions);
+    final.forEach(s=>cardStudents(context).push(s));
     validateAllCards(context);
     if(context==='exam'){saveExam();renderExamStudents();}else renderStudents();
-    const issueCount=imported.reduce((n,s)=>n+s.recognition.issues.length,0);
-    prog.textContent='已导入 '+imported.length+' 名学生、'+total+' 页；'+(issueCount?'有 '+issueCount+' 项提示，请完成复核。':'识别检查通过，仍建议抽查原图。');
+    const issueCount=final.reduce((n,s)=>n+s.recognition.issues.length,0);
+    prog.textContent='已导入 '+final.length+' 名学生、'+total+' 页；'+(issueCount?'有 '+issueCount+' 项提示，请完成复核。':'识别检查通过，仍建议抽查原图。');
     prog.style.color=issueCount?'var(--amber)':'var(--green)';
     toast('答题卡识别完成','ok');
-    if(imported.length)openCardReview(context,imported.find(s=>s.recognition.issues.length)?.id||imported[0].id);
+    if(final.length)openCardReview(context,final.find(s=>s.recognition.issues.length)?.id||final[0].id);
   }catch(e){prog.textContent='导入失败：'+e.message;prog.style.color='var(--red)';toast(e.message,'err');}
   finally{btn.disabled=false;}
 }
@@ -2435,6 +2496,7 @@ function renderCardReview(){
   const s=reviewStudent();if(!s)return;
   const students=cardStudents(cardReviewCtx.context).filter(x=>x.recognition);
   $('#cardReviewStudent').innerHTML=students.map(x=>'<option value="'+x.id+'" '+(x.id===s.id?'selected':'')+'>'+esc(x.name||x.examNo||'未命名')+'</option>').join('');
+  $('#cardReviewMergeTo').innerHTML=students.filter(x=>x.id!==s.id).map(x=>'<option value="'+x.id+'">'+esc(x.name||x.examNo||'未命名')+'（'+x.recognition.pages.length+' 页）</option>').join('');
   $('#cardReviewName').value=s.name||'';$('#cardReviewExamNo').value=s.examNo||'';$('#cardReviewAttendance').value=s.attendance||'unknown';
   const pages=s.recognition.pages;
   $('#cardReviewPage').innerHTML=pages.map((p,i)=>'<option value="'+p.id+'">第 '+((p.result&&p.result.pageNo)||p.pageNo||i+1)+' 页 · '+esc(p.fileName)+'</option>').join('');
@@ -2479,6 +2541,16 @@ function bindCardReviewEvents(){
     const btn=$('#btnCardReRecognize');btn.disabled=true;btn.textContent='识别中…';
     try{p.result=await recognizeAnswerCardPage(p,cardReviewCtx.questions);p.error='';mergeCardStudent(s,cardReviewCtx.questions);validateAllCards(cardReviewCtx.context);renderCardReview();toast('本页已重新识别','ok');}catch(e){p.error=e.message;validateCardStudent(s,cardReviewCtx.questions);renderCardReviewFields();toast(e.message,'err');}finally{btn.disabled=false;btn.textContent='重新识别本页';}
   };
+  $('#btnCardMerge').onclick=()=>{
+    const s=reviewStudent();if(!s)return;
+    const targetId=$('#cardReviewMergeTo').value;if(!targetId){toast('请选择要合并到的另一份答卷','err');return;}
+    const target=cardStudents(cardReviewCtx.context).find(x=>x.id===targetId);if(!target)return;
+    mergeStudentInto(s,target,cardReviewCtx.questions);
+    const list=cardStudents(cardReviewCtx.context);
+    if(cardReviewCtx.context==='exam')examState.students=list.filter(x=>x.id!==s.id);else state.students=list.filter(x=>x.id!==s.id);
+    cardReviewCtx.studentId=target.id;validateAllCards(cardReviewCtx.context);persistCardContext();renderCardReview();
+    toast('已合并为一份答卷','ok');
+  };
 }
 function bindExamEvents(){
   $('#examTitle').addEventListener('input',e=>{examState.title=e.target.value;saveExam();});
@@ -2501,7 +2573,21 @@ function bindExamEvents(){
     saveExam(); renderExamQuestions();
   });
   $('#examQuestions').addEventListener('click',e=>{
-    const b=e.target.closest('button[data-act="delq"]'); if(!b) return;
+    const b=e.target.closest('button[data-act]'); if(!b) return;
+    if(b.dataset.act==='preview'){
+      const q=examState.questions.find(x=>x.id===b.dataset.q); if(!q) return;
+      const pv=document.querySelector('[data-preview="'+q.id+'"]'); if(!pv) return;
+      if(pv.style.display==='none'){
+        const parts=[];
+        if(q.text)parts.push('<b>题目</b><br>'+renderMarkdownWithMath(q.text));
+        if(q.objective){if(q.answer)parts.push('<b>标准答案</b><br>'+renderMarkdownWithMath(q.answer));}
+        else{if(q.reference)parts.push('<b>参考答案</b><br>'+renderMarkdownWithMath(q.reference));if(q.points)parts.push('<b>得分点</b><br>'+renderMarkdownWithMath(q.points));}
+        pv.innerHTML=parts.length?parts.join('<hr style="border-color:var(--border);margin:10px 0">'):'<div class="hint">暂无内容</div>';
+        pv.style.display=''; b.textContent='✏️ 收起预览';
+      }else{pv.style.display='none'; b.textContent='👁 预览';}
+      return;
+    }
+    if(b.dataset.act!=='delq')return;
     examState.questions=examState.questions.filter(x=>x.id!==b.dataset.q);
     examState.questions.forEach((q,i)=>q.num=i+1);
     saveExam(); renderExamQuestions(); renderExamStudents();
