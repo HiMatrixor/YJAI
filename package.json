@@ -1,6 +1,6 @@
 {
   "name": "yjai",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "description": "YJAI - AI 阅卷助手（本地桌面版）",
   "main": "main.js",
   "author": "YJAI",
@@ -59,7 +59,8 @@
       {
         "provider": "github",
         "owner": "HiMatrixor",
-        "repo": "YJAI"
+        "repo": "YJAI",
+        "releaseType": "release"
       }
     ]
   }
