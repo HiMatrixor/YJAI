@@ -1,5 +1,13 @@
 # YJAI · AI 阅卷助手 更新日志
 
+## v1.8.5（2026-10-28）
+
+**真正修复：上传答题卡模板卡在「正在检测答题卡选项框」**
+
+- 根因（本机 Electron 环境复现并定位）：本项目内置的 opencv.js 构建里，`cv` 模块对象**自带 `.then` 方法（是 thenable）**。旧 `getCV()` 里 `resolve(cv)` 会触发 Promise 规范的 thenable 解包——`cv.then(resolve, reject)` 回调又把 `cv` 自身传回来，于是无限微任务循环，主线程被饿死，整个界面永久冻结（toast 2.6s 自动消失的定时器也被饿死，所以表现为"一直显示正在检测"，且无任何报错）。v1.8.4 的轮询 `resolve(c)` 踩了同一个坑。
+- 修复：`getCV()` 改为 `resolve({cv:window.cv})`——把 cv 作为普通包装对象的属性带出，绝不让 cv 本身成为 Promise 的 resolve 值，彻底绕开 thenable 解包；调用处改为 `(await getCV()).cv`。
+- 附：就绪判定仍保留「轮询检测 cv.Mat/cv.matFromImageData 挂载 + 监听 onRuntimeInitialized + 20s 兜底超时」，超时后重置缓存以便重试。
+
 ## v1.8.4（2026-10-28）
 
 **修复：上传答题卡模板卡在「正在检测答题卡选项框」**

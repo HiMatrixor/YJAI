@@ -2485,24 +2485,22 @@ let cvReadyPromise=null;
 function getCV(){
   if(!cvReadyPromise){
     cvReadyPromise=new Promise((resolve,reject)=>{
-      const done=()=>{
-        const c=window.cv;
-        // 只有 WASM 运行时真正就绪（关键 API 已挂载）才算成功，避免拿到半初始化对象
-        if(c&&typeof c.Mat==='function'&&typeof c.matFromImageData==='function')resolve(c);
-      };
+      const ready=()=>{const c=window.cv;return c&&typeof c.Mat==='function'&&typeof c.matFromImageData==='function';};
+      let to=null;
+      // 关键：本项目的 cv 是 thenable（自带 .then）。若直接 resolve(cv)，Promise 会按规范
+      // 去解包这个 thenable → 无限微任务循环 → 主线程被饿死、整个界面永久冻结（无报错）。
+      // 因此必须 resolve 一个普通包装对象 {cv}，把 cv 作为属性带出，绝不让 cv 成为 resolve 值。
+      const finish=()=>{if(to){clearInterval(to);to=null;}resolve({cv:window.cv});};
       const start=Date.now();
-      // 兜底超时：20 秒内仍未就绪则报错，绝不无限卡住
-      const to=setInterval(()=>{
-        done();
-        if(Date.now()-start>20000){clearInterval(to);reject(new Error('OpenCV 初始化超时，请重启软件重试'));}
+      to=setInterval(()=>{
+        if(ready())finish();
+        else if(Date.now()-start>20000){if(to){clearInterval(to);to=null;}cvReadyPromise=null;reject(new Error('OpenCV 初始化超时，请重启软件重试'));}
       },50);
       // 若模块带初始化回调则优先监听（标准 OpenCV.js 会触发 onRuntimeInitialized）
       const c0=window.cv;
-      if(c0){
-        try{c0.onRuntimeInitialized=()=>{clearInterval(to);done();};}catch(e){}
-      }
+      if(c0){try{c0.onRuntimeInitialized=()=>{if(ready())finish();};}catch(e){}}
       // 极早情况：脚本尚未加载完成
-      if(!c0){setTimeout(()=>{const c=window.cv;if(!c){clearInterval(to);reject(new Error('OpenCV 未加载'))}},8000);}
+      if(!c0){setTimeout(()=>{if(!window.cv){if(to){clearInterval(to);to=null;}cvReadyPromise=null;reject(new Error('OpenCV 未加载'));}},8000);}
     });
   }
   return cvReadyPromise;
@@ -2643,7 +2641,7 @@ function recognizeTemplateGrid(cv,src,template){
   return answers;
 }
 async function imageDataUrlToMat(dataUrl,maxSide=1400){
-  const cv=await getCV();cvSync=cv;
+  const cv=(await getCV()).cv;cvSync=cv;
   const img=await loadImageElem(dataUrl);
   const scale=Math.min(1,maxSide/Math.max(img.naturalWidth,img.naturalHeight));
   const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(img.naturalWidth*scale));canvas.height=Math.max(1,Math.round(img.naturalHeight*scale));
@@ -2665,7 +2663,7 @@ async function onPickCardTemplateImage(e){
   toast('正在检测答题卡选项框…');
   const dataUrl=await readFileDataUrl(file);
   try{
-    const cv=await getCV();cvSync=cv;
+    const cv=(await getCV()).cv;cvSync=cv;
     const mat=await imageDataUrlToMat(dataUrl);
     const d=detectCells(cv,mat,null);
     const qs=clusterQuestions(d.cells);
@@ -2699,7 +2697,7 @@ function saveCardTemplate(){
   toast('模板「'+name+'」已保存并选中','ok');
 }
 async function recognizePageWithTemplate(page,template,questions){
-  const cv=await getCV();cvSync=cv;
+  const cv=(await getCV()).cv;cvSync=cv;
   const mat=await imageDataUrlToMat(page.dataUrl);
   const answers=recognizeTemplateGrid(cv,mat,template);
   mat.delete();
