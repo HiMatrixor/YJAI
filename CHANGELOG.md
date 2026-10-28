@@ -1,5 +1,14 @@
 # YJAI · AI 阅卷助手 更新日志
 
+## v1.8.1（2026-10-28）
+
+**修复：启动报 CSP EvalError / OpenCV 未加载 / LaTeX 公式不显示**
+
+- 根因：OpenCV.js（Emscripten）初始化需要 `new Function` 动态编译，被 CSP 的 `script-src`（缺少 `'unsafe-eval'`）拦截，导致启动弹错、OpenCV 加载失败、答题卡模板/图片/PDF 导入全部失败
+- 修复：CSP 的 `script-src` 加入 `'unsafe-eval'`
+- 同时将前端库（marked / KaTeX / mhchem / auto-render / JSZip + KaTeX 字体）全部内置本地，彻底移除对 jsdelivr CDN 的依赖，解决断网或 CDN 不稳定时 LaTeX 公式无法渲染的问题
+- 现在软件完全离线可用：PDF 解析、Markdown/KaTeX 公式、docx 读取、OpenCV OMR 均不依赖外网
+
 ## v1.8.0（2026-10-28）
 
 **新增：答题卡模板系统（以「结构契约」驱动的确定性高精度识别）**
