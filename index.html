@@ -2373,8 +2373,11 @@ function cardFileParts(name){
 function readFileDataUrl(file){
   return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=()=>reject(new Error('读取失败：'+file.name));r.readAsDataURL(file);});
 }
-async function normalizeCardImage(dataUrl,maxSide=2400){
-  const img=await new Promise((resolve,reject)=>{const im=new Image();im.onload=()=>resolve(im);im.onerror=()=>reject(new Error('图片解码失败'));im.src=dataUrl;});
+function loadImageElem(dataUrl,ms=20000){
+  return withTimeout(new Promise((resolve,reject)=>{const im=new Image();im.onload=()=>resolve(im);im.onerror=()=>reject(new Error('图片解码失败'));im.src=dataUrl;}),ms,'图片加载超时');
+}
+async function normalizeCardImage(dataUrl,maxSide=1600){
+  const img=await loadImageElem(dataUrl);
   const scale=Math.min(1,maxSide/Math.max(img.naturalWidth,img.naturalHeight));
   const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(img.naturalWidth*scale));canvas.height=Math.max(1,Math.round(img.naturalHeight*scale));
   const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(img,0,0,canvas.width,canvas.height);
@@ -2392,9 +2395,9 @@ async function expandCardFiles(files){
       const pdf=await withTimeout(pdfjsLib.getDocument({data:await f.arrayBuffer()}).promise,60000,'PDF 解析超时（'+f.name+'），请确认文件未损坏');
       for(let n=1;n<=pdf.numPages;n++){
         const page=await pdf.getPage(n);let viewport=page.getViewport({scale:2});
-        if(Math.max(viewport.width,viewport.height)>2400)viewport=page.getViewport({scale:2*2400/Math.max(viewport.width,viewport.height)});
+        if(Math.max(viewport.width,viewport.height)>1600)viewport=page.getViewport({scale:2*1600/Math.max(viewport.width,viewport.height)});
         const canvas=document.createElement('canvas');canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
-        await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;
+        await withTimeout(page.render({canvasContext:canvas.getContext('2d'),viewport}).promise,30000,'PDF 页面渲染超时');
         pages.push({group:'pdf-'+fi+'-'+f.name,pageNo:n,totalPages:pdf.numPages,fileName:f.name+' · 第'+n+'页',dataUrl:canvas.toDataURL('image/jpeg',0.92)});
       }
     }else{
@@ -2632,7 +2635,7 @@ function recognizeTemplateGrid(cv,src,template){
 }
 async function imageDataUrlToMat(dataUrl,maxSide=1400){
   const cv=await getCV();cvSync=cv;
-  const img=await new Promise((res,rej)=>{const im=new Image();im.onload=()=>res(im);im.onerror=()=>rej(new Error('图片加载失败'));im.src=dataUrl;});
+  const img=await loadImageElem(dataUrl);
   const scale=Math.min(1,maxSide/Math.max(img.naturalWidth,img.naturalHeight));
   const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(img.naturalWidth*scale));canvas.height=Math.max(1,Math.round(img.naturalHeight*scale));
   const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.drawImage(img,0,0,canvas.width,canvas.height);
@@ -2650,6 +2653,7 @@ function renderCardTemplateSelect(){
 async function onPickCardTemplateImage(e){
   const file=e.target.files&&e.target.files[0];e.target.value='';
   if(!file)return;
+  toast('正在检测答题卡选项框…');
   const dataUrl=await readFileDataUrl(file);
   try{
     const cv=await getCV();cvSync=cv;
@@ -2909,12 +2913,13 @@ async function importAnswerCards(files,context){
       const student=context==='exam'?{id:uid(),name:fallback,examNo:'',attendance:'unknown',answers:{}}:{id:uid(),name:fallback,examNo:'',attendance:'unknown',text:'',images:[]};
       student.recognition={version:1,context,questionText:questions[0].text,pages,answers:{},issues:[],reviewStatus:'pending'};
       for(let pi=0;pi<pages.length;pi++){
-        done++;prog.textContent='正在识别第 '+(gi+1)+'/'+groups.length+' 份 · 总页面 '+done+'/'+total+'：'+pages[pi].fileName;
-        try{pages[pi].result=await recognizeAnswerCardPage(pages[pi],questions);}catch(e){pages[pi].error=e.message;}
+        done++;prog.textContent='第 '+(gi+1)+'/'+groups.length+' 份 · 页面 '+done+'/'+total+'：正在 AI 识别 '+pages[pi].fileName;
+        try{pages[pi].result=await withTimeout(recognizeAnswerCardPage(pages[pi],questions),200000,'单页识别超时（模型响应过慢），已跳过');}catch(e){pages[pi].error=e.message;}
         // 选中模板时：用模板坐标确定性识别覆盖客观题
         if(context==='exam'&&examState.cardTemplateId&&pages[pi].result){
           const tpl=cardTemplates.find(t=>t.id===examState.cardTemplateId);
           if(tpl){
+            prog.textContent='第 '+(gi+1)+'/'+groups.length+' 份 · 页面 '+done+'/'+total+'：正在按模板识别 '+pages[pi].fileName;
             try{
               const tAnswers=await recognizePageWithTemplate(pages[pi],tpl,questions);
               Object.keys(tAnswers).forEach(qid=>{pages[pi].result.answers[qid]={...pages[pi].result.answers[qid],...tAnswers[qid]};});
