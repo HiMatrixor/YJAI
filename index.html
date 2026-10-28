@@ -2317,6 +2317,61 @@ function normalizeCardPage(raw,questions,page){
     pageNo:page.pageNo||Number(raw.pageNo)||1,totalPages:Number(raw.totalPages)||page.totalPages||null,
     answers,seen:Array.from(seen),unknown,layout:String(raw.layout||'').trim()};
 }
+function median(a){const s=[...a].sort((x,y)=>x-y);const m=Math.floor(s.length/2);return s.length%2?s[m]:(s[m-1]+s[m])/2;}
+/* ================= 确定性像素填涂分析（本地 OMR，不依赖大模型"看图猜"） =================
+   大模型负责给出每题选项框的归一化坐标；本地计算每个框内的"墨迹覆盖率"，
+   在同题选项间做相对比较，判定哪个被涂黑。与第一篇的核心思想一致：判填涂不用 OCR。 */
+function analyzeOptionRegions(dataUrl, regions){
+  return new Promise(resolve=>{
+    const img=new Image();
+    const fallback=()=>resolve(regions.map(r=>({qid:r.qid,options:(r.options||[]).map(o=>({...o,valid:false,ratio:0,filled:false}))})));
+    img.onload=()=>{
+      try{
+        const c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;
+        const ctx=c.getContext('2d',{willReadFrequently:true});ctx.drawImage(img,0,0);
+        const W=img.naturalWidth,H=img.naturalHeight;
+        const out=regions.map(r=>({
+          qid:r.qid,
+          options:(r.options||[]).map(o=>{
+            const b=(o.bbox||[]).map(Number);
+            if(b.length!==4||b.some(n=>!Number.isFinite(n)||n<0||n>1))return {...o,valid:false,ratio:0,filled:false};
+            let [x1,y1,x2,y2]=b;if(x1>x2)[x1,x2]=[x2,x1];if(y1>y2)[y1,y2]=[y2,y1];
+            const dx=Math.round(x1*W),dy=Math.round(y1*H);
+            const dw=Math.max(3,Math.round((x2-x1)*W)),dh=Math.max(3,Math.round((y2-y1)*H));
+            if(dx+dw>W||dy+dh>H||dw>W||dh>H)return {...o,valid:false,ratio:0,filled:false};
+            const d=ctx.getImageData(dx,dy,dw,dh).data;
+            const lums=[];for(let i=0;i<d.length;i+=4)lums.push(0.299*d[i]+0.587*d[i+1]+0.114*d[i+2]);
+            lums.sort((a,b)=>a-b);const n=lums.length;
+            const bg=lums[Math.floor(n*0.9)];   // 背景亮度：取上十分位，自适应光照
+            let ink=0;for(const L of lums)if(L<bg-45)ink++;   // 显著暗于背景的视为墨迹
+            return {...o,valid:true,ratio:ink/n};
+          })
+        }));
+        out.forEach(r=>{
+          const valid=r.options.filter(o=>o.valid);const ratios=valid.map(o=>o.ratio);
+          if(!ratios.length)return;
+          const med=median(ratios),mx=Math.max(...ratios);
+          // 填涂 = 覆盖率显著高于同题其他选项（相对判断，抗光照漂移）
+          valid.forEach(o=>{o.filled=o.ratio>=Math.max(0.15,1.5*med)&&o.ratio>=0.6*mx;});
+        });
+        resolve(out);
+      }catch(e){fallback();}
+    };
+    img.onerror=fallback;img.src=dataUrl;
+  });
+}
+/* 由本地像素分析结果确定该题答案（确定性），返回 null 表示无法判定 */
+function decideChoice(localOptions){
+  const valid=(localOptions||[]).filter(o=>o.valid);
+  if(!valid.length)return null;
+  const filled=valid.filter(o=>o.filled);
+  if(!filled.length)return {value:'',status:'blank',confidence:0.85,note:'像素分析：未检测到填涂'};
+  const labels=filled.map(o=>o.label).filter(Boolean).sort().join('');
+  if(filled.length>1)return {value:labels,status:'multiple',confidence:0.7,note:'像素分析：检测到多个填涂 '+labels};
+  const others=valid.filter(o=>!o.filled).map(o=>o.ratio);
+  const margin=filled[0].ratio/Math.max(0.001,...others);
+  return {value:labels,status:'ok',confidence:Math.min(0.98,0.55+margin*0.12),note:'像素分析确认填涂 '+labels};
+}
 async function recognizeAnswerCardPage(page,questions){
   const qDesc=questions.map(q=>'题号 '+q.num+'（'+(q.objective?'客观题':'主观题')+'）：'+(q.text||'').slice(0,100)).join('\n');
   const sys='你是严谨的通用答题卡识别器。你能分析未见过的单栏、多栏、横排、竖排、填涂卡和主观题答题区域。你只提取可见事实，绝不猜测。只输出合法 JSON。';
@@ -2325,29 +2380,53 @@ async function recognizeAnswerCardPage(page,questions){
   const parsed=parseAIJson(raw);
   if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('识别返回格式异常');
   const result=normalizeCardPage(parsed,questions,page);
-  // 选择题专项二次识别：提升填涂→选项映射准确率
+  // 选择题专项二次识别：大模型定位选项框 → 本地像素分析确定性判填涂
   try{
     const marks=await recognizeObjectiveMarks(page,questions);
-    if(marks)Object.keys(marks).forEach(qid=>{result.answers[qid]={...result.answers[qid],...marks[qid]};});
+    if(marks&&marks.answers){
+      Object.keys(marks.answers).forEach(qid=>{result.answers[qid]={...result.answers[qid],...marks.answers[qid]};});
+      if(marks.optionsByQid){
+        const regions=Object.keys(marks.optionsByQid).map(qid=>({qid,options:marks.optionsByQid[qid]}));
+        const local=await analyzeOptionRegions(page.dataUrl,regions);
+        local.forEach(r=>{
+          const prev=result.answers[r.qid]||{value:'',status:'not_seen',confidence:0};
+          const d=decideChoice(r.options);
+          if(!d)return;
+          if(d.status==='ok'||d.status==='multiple'){
+            result.answers[r.qid]={...prev,value:d.value,status:d.status,confidence:d.confidence,note:d.note,source:'omr',pageId:page.id};
+          }else if(d.status==='blank'&&(prev.status==='blank'||!prev.value)){
+            result.answers[r.qid]={...prev,value:'',status:'blank',confidence:d.confidence,note:d.note,source:'omr',pageId:page.id};
+          }else if(d.status==='blank'&&prev.value){
+            // 大模型认为有答案但本地像素未确认，保留大模型结果但降低置信度
+            result.answers[r.qid]={...prev,confidence:Math.min(prev.confidence||0.8,0.6),note:(prev.note||'')+'；像素分析未确认'};
+          }
+        });
+      }
+    }
   }catch(e){/* 专项识别失败则沿用首次结果 */}
   return result;
 }
-/* 选择题填涂专项识别：只判断哪个选项被涂黑，忽略印刷文字，避免误读 */
+/* 选择题填涂专项识别：大模型只负责"定位选项框 + 给出填涂判断"，忽略印刷文字；本地再用像素复核 */
 async function recognizeObjectiveMarks(page,questions){
   const obj=questions.filter(q=>q.objective&&/选择|单选|多选/.test(q.type||''));
   if(!obj.length)return null;
   const qDesc=obj.map(q=>'第 '+q.num+' 题：'+(q.text||'').slice(0,80)).join('\n');
   const sys='你是选择题填涂识别器，专门判断答题卡上每个选择题涂黑了哪个选项。你只依据填涂痕迹判断，忽略印刷的选项字母和题干文字。';
-  const user='下面是一页答题卡，请只识别这些选择题的填涂结果：\n'+qDesc+'\n\n规则：\n1. 找到每题对应的填涂区（通常是一行或一列 A/B/C/D 选项框），判断哪个框被涂黑/填涂。\n2. value 只输出被填涂的选项字母；多选按字母升序合并（如 AB）；单选若出现多个填涂，value 输出多个字母且 status 用 multiple。\n3. 完全未填涂→value 为空、status 用 blank；填涂很淡/擦除不净/无法确定→status 用 unclear。\n4. 绝对不要根据题目内容或"哪个选项像正确答案"猜测，只看可见的填涂痕迹。\n5. confidence 为 0 到 1。\n输出严格 JSON：{"marks":[{"num":"题号","value":"A","status":"ok","confidence":0.9}]}';
+  const user='下面是一页答题卡，请只识别这些选择题的填涂结果：\n'+qDesc+'\n\n规则：\n1. 找到每题对应的填涂区（通常是一行或一列 A/B/C/D 选项框），判断哪个框被涂黑/填涂。\n2. value 只输出被填涂的选项字母；多选按字母升序合并（如 AB）；单选若出现多个填涂，value 输出多个字母且 status 用 multiple。\n3. 完全未填涂→value 为空、status 用 blank；填涂很淡/擦除不净/无法确定→status 用 unclear。\n4. 绝对不要根据题目内容或"哪个选项像正确答案"猜测，只看可见的填涂痕迹。\n5. 为每个选项给出归一化边界框 bbox（[x1,y1,x2,y2]，相对整图宽高，取值 0~1，x1<x2、y1<y2），用于后续本地像素复核。\n6. confidence 为 0 到 1。\n输出严格 JSON：{"marks":[{"num":"题号","value":"A","status":"ok","confidence":0.9,"options":[{"label":"A","bbox":[0.1,0.2,0.15,0.24]},{"label":"B","bbox":[0.2,0.2,0.25,0.24]}]}]}';
   const raw=await withTimeout(callAI([{role:'system',content:sys},{role:'user',content:[{type:'text',text:user},{type:'image_url',image_url:{url:page.dataUrl}}]}],{json:true}),120000,'选择题填涂识别超时');
   const parsed=parseAIJson(raw);
   const marks=Array.isArray(parsed&&parsed.marks)?parsed.marks:[];
-  const out={};const byNum=new Map(obj.map(q=>[cardQuestionNum(q.num),q]));
+  const answers={},optionsByQid={};const byNum=new Map(obj.map(q=>[cardQuestionNum(q.num),q]));
   marks.forEach(m=>{
     const q=byNum.get(cardQuestionNum(m&&(m.num||m.questionNum||'')));if(!q)return;
-    out[q.id]={value:String(m.value??'').trim(),status:cardStatus(m.status,m.value),confidence:cardConfidence(m.confidence),source:'ai',note:'选择题填涂专项识别',pageId:page.id};
+    answers[q.id]={value:String(m.value??'').trim(),status:cardStatus(m.status,m.value),confidence:cardConfidence(m.confidence),source:'ai',note:'选择题填涂专项识别',pageId:page.id};
+    if(Array.isArray(m.options)&&m.options.length){
+      const opts=m.options.filter(o=>o&&Array.isArray(o.bbox)).map(o=>({label:String(o.label||'').trim(),bbox:o.bbox}));
+      if(opts.length)optionsByQid[q.id]=opts;
+    }
   });
-  return Object.keys(out).length?out:null;
+  if(!Object.keys(answers).length)return null;
+  return {answers,optionsByQid:Object.keys(optionsByQid).length?optionsByQid:null};
 }
 function mergeCardStudent(student,questions){
   const r=student.recognition,merged={};let identities={name:[],examNo:[],attendance:[]};
