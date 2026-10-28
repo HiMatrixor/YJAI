@@ -13,6 +13,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script defer src="pdf.min.js"></script>
 <script defer src="pdf.worker.min.js"></script>
+<script defer src="opencv.js"></script>
 <style>
   :root{
     --bg:#0e1116; --bg2:#12161d; --panel:#171c24; --panel2:#1c232e;
@@ -2372,6 +2373,123 @@ function decideChoice(localOptions){
   const margin=filled[0].ratio/Math.max(0.001,...others);
   return {value:labels,status:'ok',confidence:Math.min(0.98,0.55+margin*0.12),note:'像素分析确认填涂 '+labels};
 }
+/* ================= OpenCV OMR（真正确定性填涂识别） ================= */
+let cvReadyPromise=null;
+function getCV(){
+  if(!cvReadyPromise){
+    cvReadyPromise=new Promise((resolve,reject)=>{
+      const cv=window.cv;
+      if(!cv){setTimeout(()=>{const c=window.cv;c?resolve(c):reject(new Error('OpenCV 未加载'))},5000);return;}
+      if(typeof cv.then==='function'){cv.then(()=>resolve(cv),()=>reject(new Error('OpenCV 初始化失败')));}
+      else resolve(cv);
+    });
+  }
+  return cvReadyPromise;
+}
+function cvMedian(a){const s=[...a].sort((x,y)=>x-y);const m=Math.floor(s.length/2);return s.length%2?s[m]:(s[m-1]+s[m])/2;}
+function cvBgOf(cv,mat){
+  const d=mat.data,n=d.length,a=new Array(n);
+  for(let i=0;i<n;i++)a[i]=d[i];
+  a.sort((x,y)=>x-y);return a[Math.floor(n*0.9)];
+}
+function cvFillCircle(cv,mat,W,H,bg,cx,cy,r){
+  let ink=0,total=0;
+  const x0=Math.max(0,Math.floor(cx-r)),x1=Math.min(W-1,Math.ceil(cx+r)),y0=Math.max(0,Math.floor(cy-r)),y1=Math.min(H-1,Math.ceil(cy+r));
+  for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){const dx=x-cx,dy=y-cy;if(dx*dx+dy*dy>r*r)continue;total++;if(mat.data[y*W+x]<bg-45)ink++;}
+  return total?ink/total:0;
+}
+function cvFillRect(cv,mat,W,H,bg,rx,ry,rw,rh){
+  let ink=0,total=0;
+  const x0=Math.max(0,rx),y0=Math.max(0,ry),x1=Math.min(W-1,rx+rw),y1=Math.min(H-1,ry+rh);
+  for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){total++;if(mat.data[y*W+x]<bg-45)ink++;}
+  return total?ink/total:0;
+}
+function cvSplit1D(vals, gapThresh){
+  // vals: 已排序的数值数组，返回分组（每组的数值数组）
+  const out=[];let cur=[];let prev=-1e9;
+  for(const v of vals){if(cur.length&&v-prev>gapThresh){out.push(cur);cur=[];}cur.push(v);prev=v;}
+  if(cur.length)out.push(cur);return out;
+}
+function runOMR(cv,src,region){
+  let work=src;
+  if(region&&Array.isArray(region)&&region.length===4){
+    let [x1,y1,x2,y2]=region.map(Number);
+    if(x1<x2&&y1<y2&&x1>=0&&y1>=0&&x2<=1&&y2<=1){
+      const rx=Math.round(x1*src.cols),ry=Math.round(y1*src.rows),rw=Math.round((x2-x1)*src.cols),rh=Math.round((y2-y1)*src.rows);
+      if(rw>20&&rh>20){work=src.roi(new cv.Rect(rx,ry,rw,rh));}
+    }
+  }
+  const W=work.cols,H=work.rows;
+  let gray=new cv.Mat();if(work.channels()>=3)cv.cvtColor(work,gray,cv.COLOR_RGBA2GRAY);else gray=work.clone();
+  let blur=new cv.Mat();cv.GaussianBlur(gray,blur,new cv.Size(5,5),0);
+  const bg=cvBgOf(cv,gray);
+  const cells=[];
+  let circles=new cv.Mat();cv.HoughCircles(blur,circles,cv.HOUGH_GRADIENT,1,30,100,18,10,60);
+  for(let i=0;i<circles.cols;i++){const x=circles.data32F[i*3],y=circles.data32F[i*3+1],r=circles.data32F[i*3+2];cells.push({x,y,r,fill:cvFillCircle(cv,gray,W,H,bg,x,y,r),shape:'c'});}
+  let bin=new cv.Mat();cv.threshold(blur,bin,bg-60,255,cv.THRESH_BINARY_INV);
+  let contours=new cv.MatVector(),hier=new cv.Mat();cv.findContours(bin,contours,hier,cv.RETR_LIST,cv.CHAIN_APPROX_SIMPLE);
+  const seen=new Set();
+  for(let i=0;i<contours.size();i++){
+    const c=contours.get(i),peri=cv.arcLength(c,true);
+    const approx=new cv.Mat();cv.approxPolyDP(c,approx,0.02*peri,true);
+    if(approx.rows===4){
+      const rect=cv.boundingRect(c),w=rect.width,h=rect.height;
+      if(w>=12&&h>=12&&w<=80&&h<=80){const ar=w/h;if(ar>=0.6&&ar<=1.6){const cx=rect.x+w/2,cy=rect.y+h/2,key=Math.round(cx/4)+'_'+Math.round(cy/4);if(!seen.has(key)){seen.add(key);cells.push({x:cx,y:cy,r:Math.max(w,h)/2,fill:cvFillRect(cv,gray,W,H,bg,rect.x,rect.y,w,h),shape:'r'});}}}
+    }
+    approx.delete();
+  }
+  const dedup=[];for(const c of cells){if(c.shape==='r'){if(cells.some(o=>o.shape==='c'&&Math.hypot(o.x-c.x,o.y-c.y)<c.r+8))continue;}dedup.push(c);}
+  // 2D 聚类：先按 y 分成行（题），行内按 x 分成列块（多栏），列优先阅读
+  dedup.sort((a,b)=>a.y-b.y);
+  const medR=cvMedian(dedup.map(c=>c.r))||10;
+  const bands=[];{let cur=[],lastY=0;for(const c of dedup){if(!cur.length||Math.abs(c.y-lastY)>medR*1.5){cur=[];bands.push(cur);lastY=c.y;}cur.push(c);}}
+  // 每行按 x 切分成"列块"（多栏），再按列优先（题号竖排）阅读顺序展平
+  const blocks=[];   // {bi, ii, cells}
+  bands.forEach((band,ii)=>{
+    band.sort((a,b)=>a.x-b.x);
+    const gaps=[];for(let i=1;i<band.length;i++)gaps.push(band[i].x-band[i-1].x);
+    const medGap=gaps.length?cvMedian(gaps):medR;
+    const thr=Math.max(medGap*1.7,medR*3);
+    let cur=[],prevX=-1e9,bi=0;
+    for(const c of band){if(cur.length&&(c.x-prevX)>thr){blocks.push({bi,ii,cells:cur});cur=[];bi++;}cur.push(c);prevX=c.x;}
+    if(cur.length)blocks.push({bi,ii,cells:cur});
+  });
+  blocks.sort((a,b)=>a.bi-b.bi||a.ii-b.ii);
+  const questions=blocks.map(b=>b.cells);
+  // 每个"题"内相对比较判填涂
+  questions.forEach(r=>{const ratios=r.map(c=>c.fill),med=cvMedian(ratios),mx=Math.max(...ratios);r.forEach(c=>{c.filled=c.fill>=Math.max(0.35,1.5*med)&&c.fill>=0.6*mx;});});
+  const cellCount=dedup.length;
+  gray.delete();blur.delete();circles.delete();bin.delete();contours.delete();hier.delete();
+  return {W,H,questions,cellCount};
+}
+async function imageDataUrlToMat(dataUrl){
+  const cv=await getCV();cvSync=cv;
+  const img=await new Promise((res,rej)=>{const im=new Image();im.onload=()=>res(im);im.onerror=()=>rej(new Error('图片加载失败'));im.src=dataUrl;});
+  const canvas=document.createElement('canvas');canvas.width=img.naturalWidth;canvas.height=img.naturalHeight;
+  const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.drawImage(img,0,0);
+  const idata=ctx.getImageData(0,0,canvas.width,canvas.height);
+  return cv.matFromImageData(idata);
+}
+/* 将 OMR 网格映射为题号+选项：题序对应题序，列序对应选项字母 */
+function mapOMRToAnswers(questions,structure,examQuestions){
+  const byNum=new Map(examQuestions.map(q=>[cardQuestionNum(q.num),q]));
+  const out={};
+  questions.forEach((row,i)=>{
+    const st=structure[i];if(!st)return;
+    const q=byNum.get(cardQuestionNum(st.num));if(!q)return;
+    const opts=Array.isArray(st.options)&&st.options.length?st.options:['A','B','C','D'];
+    const filled=[];let best=null;
+    row.forEach((c,j)=>{
+      if(c.filled)filled.push(opts[j]||String.fromCharCode(65+j));
+      if(!best||c.fill>(best.fill||0))best=c;
+    });
+    const labels=filled.filter(Boolean).sort().join('');
+    const status=filled.length>1?'multiple':(filled.length===1?'ok':'blank');
+    const conf=filled.length===1?Math.min(0.98,0.55+(best&&best.fill||0)*0.4):0.7;
+    out[q.id]={value:labels,status,confidence:conf,source:'omr',note:'OpenCV OMR 识别',pageId:''};
+  });
+  return out;
+}
 async function recognizeAnswerCardPage(page,questions){
   const qDesc=questions.map(q=>'题号 '+q.num+'（'+(q.objective?'客观题':'主观题')+'）：'+(q.text||'').slice(0,100)).join('\n');
   const sys='你是严谨的通用答题卡识别器。你能分析未见过的单栏、多栏、横排、竖排、填涂卡和主观题答题区域。你只提取可见事实，绝不猜测。只输出合法 JSON。';
@@ -2380,12 +2498,29 @@ async function recognizeAnswerCardPage(page,questions){
   const parsed=parseAIJson(raw);
   if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('识别返回格式异常');
   const result=normalizeCardPage(parsed,questions,page);
-  // 选择题专项二次识别：大模型定位选项框 → 本地像素分析确定性判填涂
+  // 选择题：OpenCV OMR 确定性识别为主，大模型识别为兜底
   try{
     const marks=await recognizeObjectiveMarks(page,questions);
     if(marks&&marks.answers){
+      // 先写入大模型结果（兜底）
       Object.keys(marks.answers).forEach(qid=>{result.answers[qid]={...result.answers[qid],...marks.answers[qid]};});
-      if(marks.optionsByQid){
+      // OpenCV OMR：检测填涂网格，确定性判定
+      let omrDone=false;
+      try{
+        const mat=await imageDataUrlToMat(page.dataUrl);
+        const omr=runOMR(getCVSync(),mat,marks.region||null);
+        mat.delete();
+        if(omr&&omr.questions.length&&omr.cellCount>=2){
+          const mapped=mapOMRToAnswers(omr.questions,marks.structure||[],questions);
+          const mappedQids=Object.keys(mapped);
+          if(mappedQids.length){
+            mappedQids.forEach(qid=>{result.answers[qid]={...result.answers[qid],...mapped[qid],pageId:page.id};});
+            omrDone=true;
+          }
+        }
+      }catch(e){/* OpenCV 失败则用大模型+像素兜底 */}
+      // 兜底：若 OMR 未生效，仍用大模型 bbox + 本地像素
+      if(!omrDone&&marks.optionsByQid){
         const regions=Object.keys(marks.optionsByQid).map(qid=>({qid,options:marks.optionsByQid[qid]}));
         const local=await analyzeOptionRegions(page.dataUrl,regions);
         local.forEach(r=>{
@@ -2393,11 +2528,10 @@ async function recognizeAnswerCardPage(page,questions){
           const d=decideChoice(r.options);
           if(!d)return;
           if(d.status==='ok'||d.status==='multiple'){
-            result.answers[r.qid]={...prev,value:d.value,status:d.status,confidence:d.confidence,note:d.note,source:'omr',pageId:page.id};
+            result.answers[r.qid]={...prev,value:d.value,status:d.status,confidence:d.confidence,note:d.note,source:'pixel',pageId:page.id};
           }else if(d.status==='blank'&&(prev.status==='blank'||!prev.value)){
-            result.answers[r.qid]={...prev,value:'',status:'blank',confidence:d.confidence,note:d.note,source:'omr',pageId:page.id};
+            result.answers[r.qid]={...prev,value:'',status:'blank',confidence:d.confidence,note:d.note,source:'pixel',pageId:page.id};
           }else if(d.status==='blank'&&prev.value){
-            // 大模型认为有答案但本地像素未确认，保留大模型结果但降低置信度
             result.answers[r.qid]={...prev,confidence:Math.min(prev.confidence||0.8,0.6),note:(prev.note||'')+'；像素分析未确认'};
           }
         });
@@ -2406,27 +2540,33 @@ async function recognizeAnswerCardPage(page,questions){
   }catch(e){/* 专项识别失败则沿用首次结果 */}
   return result;
 }
-/* 选择题填涂专项识别：大模型只负责"定位选项框 + 给出填涂判断"，忽略印刷文字；本地再用像素复核 */
+let cvSync=null;let cvSyncReady=false;
+function getCVSync(){if(!cvSync&&window.cv){cvSync=window.cv;}return cvSync;}
+/* 选择题填涂专项识别：大模型只负责给出题序与选项字母（文本，可靠），不负责像素级定位 */
 async function recognizeObjectiveMarks(page,questions){
   const obj=questions.filter(q=>q.objective&&/选择|单选|多选/.test(q.type||''));
   if(!obj.length)return null;
   const qDesc=obj.map(q=>'第 '+q.num+' 题：'+(q.text||'').slice(0,80)).join('\n');
-  const sys='你是选择题填涂识别器，专门判断答题卡上每个选择题涂黑了哪个选项。你只依据填涂痕迹判断，忽略印刷的选项字母和题干文字。';
-  const user='下面是一页答题卡，请只识别这些选择题的填涂结果：\n'+qDesc+'\n\n规则：\n1. 找到每题对应的填涂区（通常是一行或一列 A/B/C/D 选项框），判断哪个框被涂黑/填涂。\n2. value 只输出被填涂的选项字母；多选按字母升序合并（如 AB）；单选若出现多个填涂，value 输出多个字母且 status 用 multiple。\n3. 完全未填涂→value 为空、status 用 blank；填涂很淡/擦除不净/无法确定→status 用 unclear。\n4. 绝对不要根据题目内容或"哪个选项像正确答案"猜测，只看可见的填涂痕迹。\n5. 为每个选项给出归一化边界框 bbox（[x1,y1,x2,y2]，相对整图宽高，取值 0~1，x1<x2、y1<y2），用于后续本地像素复核。\n6. confidence 为 0 到 1。\n输出严格 JSON：{"marks":[{"num":"题号","value":"A","status":"ok","confidence":0.9,"options":[{"label":"A","bbox":[0.1,0.2,0.15,0.24]},{"label":"B","bbox":[0.2,0.2,0.25,0.24]}]}]}';
+  const sys='你是选择题填涂识别器。你负责判断答题卡上每个选择题涂黑了哪个选项，并给出结构。你只依据填涂痕迹判断，忽略印刷的选项字母和题干文字。';
+  const user='下面是一页答题卡，请识别这些选择题的填涂结果：\n'+qDesc+'\n\n规则：\n1. 按页面从上到下、从左到右的阅读顺序输出 marks。\n2. 每题判断哪个选项被涂黑；value 只写被填涂的选项字母（多选按字母升序如 AB）；单选多涂 value 写多个字母且 status=multiple。\n3. 未填涂→value 空、status=blank；淡涂/擦除/不确定→status=unclear。\n4. 每题在 options 中按从左到右顺序列出该题的选项字母（如 ["A","B","C","D"]），这是用于对齐的文本结构，不需要精确坐标。\n5. region 是整页中选择题填涂区域的整体边界框（归一化 [x1,y1,x2,y2]，0~1），用于本地像素分析，只需圈出大致范围即可。\n6. 绝对不要根据题目内容或"哪个像正确答案"猜测，只看填涂痕迹。confidence 0~1。\n输出严格 JSON：{"region":[0.05,0.15,0.95,0.85],"marks":[{"num":"题号","value":"A","status":"ok","confidence":0.9,"options":["A","B","C","D"]}]}';
   const raw=await withTimeout(callAI([{role:'system',content:sys},{role:'user',content:[{type:'text',text:user},{type:'image_url',image_url:{url:page.dataUrl}}]}],{json:true}),120000,'选择题填涂识别超时');
   const parsed=parseAIJson(raw);
   const marks=Array.isArray(parsed&&parsed.marks)?parsed.marks:[];
-  const answers={},optionsByQid={};const byNum=new Map(obj.map(q=>[cardQuestionNum(q.num),q]));
+  const region=Array.isArray(parsed&&parsed.region)&&parsed.region.length===4?parsed.region.map(Number):null;
+  const answers={},structure=[],optionsByQid={};const byNum=new Map(obj.map(q=>[cardQuestionNum(q.num),q]));
   marks.forEach(m=>{
-    const q=byNum.get(cardQuestionNum(m&&(m.num||m.questionNum||'')));if(!q)return;
+    const num=cardQuestionNum(m&&(m.num||m.questionNum||''));
+    const q=byNum.get(num);if(!q)return;
     answers[q.id]={value:String(m.value??'').trim(),status:cardStatus(m.status,m.value),confidence:cardConfidence(m.confidence),source:'ai',note:'选择题填涂专项识别',pageId:page.id};
-    if(Array.isArray(m.options)&&m.options.length){
+    const labels=Array.isArray(m.options)?m.options.map(o=>String(o&&(o.label||o)||'').trim()).filter(Boolean):[];
+    structure.push({num,options:labels.length?labels:null});
+    if(Array.isArray(m.options)){
       const opts=m.options.filter(o=>o&&Array.isArray(o.bbox)).map(o=>({label:String(o.label||'').trim(),bbox:o.bbox}));
       if(opts.length)optionsByQid[q.id]=opts;
     }
   });
   if(!Object.keys(answers).length)return null;
-  return {answers,optionsByQid:Object.keys(optionsByQid).length?optionsByQid:null};
+  return {answers,structure,region,optionsByQid:Object.keys(optionsByQid).length?optionsByQid:null};
 }
 function mergeCardStudent(student,questions){
   const r=student.recognition,merged={};let identities={name:[],examNo:[],attendance:[]};
