@@ -1,5 +1,13 @@
 # YJAI · AI 阅卷助手 更新日志
 
+## v1.8.4（2026-10-28）
+
+**修复：上传答题卡模板卡在「正在检测答题卡选项框」**
+
+- 根因：OpenCV.js 的 WASM 是内嵌 base64 + 异步编译（instantiateAsync），脚本加载后 `window.cv` 立即存在、但 `cv.Mat`/`cv.matFromImageData` 等 API 要等 `onRuntimeInitialized` 触发后才挂载。旧 `getCV()` 误判 `cv.then` 是否存在，实际本构建无 `.then`，于是拿到半初始化对象立即返回，导致后续识别静默挂起/无响应
+- 修复：重写 `getCV()` 初始化等待逻辑——轮询检测 `cv.Mat` 与 `cv.matFromImageData` 是否真正挂载，并监听 `onRuntimeInitialized` 回调，两者任一就绪即放行
+- 兜底：20 秒硬超时，若 OpenCV 仍未就绪则明确报错提示重启，绝不再无限卡住
+
 ## v1.8.3（2026-10-28）
 
 **修复：答题卡识别仍卡住（全链路超时兜底 + 图片降采样）**

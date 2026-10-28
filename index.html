@@ -2485,15 +2485,24 @@ let cvReadyPromise=null;
 function getCV(){
   if(!cvReadyPromise){
     cvReadyPromise=new Promise((resolve,reject)=>{
-      const cv=window.cv;
-      if(!cv){
-        setTimeout(()=>{const c=window.cv;c?resolve(c):reject(new Error('OpenCV 未加载'))},8000);
-        return;
+      const done=()=>{
+        const c=window.cv;
+        // 只有 WASM 运行时真正就绪（关键 API 已挂载）才算成功，避免拿到半初始化对象
+        if(c&&typeof c.Mat==='function'&&typeof c.matFromImageData==='function')resolve(c);
+      };
+      const start=Date.now();
+      // 兜底超时：20 秒内仍未就绪则报错，绝不无限卡住
+      const to=setInterval(()=>{
+        done();
+        if(Date.now()-start>20000){clearInterval(to);reject(new Error('OpenCV 初始化超时，请重启软件重试'));}
+      },50);
+      // 若模块带初始化回调则优先监听（标准 OpenCV.js 会触发 onRuntimeInitialized）
+      const c0=window.cv;
+      if(c0){
+        try{c0.onRuntimeInitialized=()=>{clearInterval(to);done();};}catch(e){}
       }
-      const to=setTimeout(()=>reject(new Error('OpenCV 初始化超时')),15000);
-      if(typeof cv.then==='function'){
-        cv.then(()=>{clearTimeout(to);resolve(cv);},(e)=>{clearTimeout(to);reject(new Error('OpenCV 初始化失败：'+(e&&e.message||e)));});
-      }else{clearTimeout(to);resolve(cv);}
+      // 极早情况：脚本尚未加载完成
+      if(!c0){setTimeout(()=>{const c=window.cv;if(!c){clearInterval(to);reject(new Error('OpenCV 未加载'))}},8000);}
     });
   }
   return cvReadyPromise;
