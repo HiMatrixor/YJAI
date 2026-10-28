@@ -446,6 +446,10 @@
             <label>选择要批改的题目</label>
             <select id="gradeParsedSelect"></select>
           </div>
+          <div class="row" id="gradePreviewBar" style="margin-top:10px;display:none">
+            <button class="btn btn-ghost btn-sm" id="btnGradePreview">👁 预览解析结果（LaTeX）</button>
+          </div>
+          <div class="md-preview" id="gradePreviewBox" style="display:none"></div>
         </div>
 
         <!-- 手动输入面板 -->
@@ -531,6 +535,10 @@
             <span class="hint" id="paperFileName" style="margin:0;align-self:center"></span>
           </div>
           <div class="hint" id="paperParseProgress" style="margin-top:8px"></div>
+          <div class="row" id="paperPreviewBar" style="margin-top:10px;display:none">
+            <button class="btn btn-ghost btn-sm" id="btnPaperPreview">📋 预览解析结果（LaTeX）</button>
+          </div>
+          <div class="md-preview" id="paperPreviewBox" style="display:none"></div>
         </div>
       </div>
 
@@ -1073,18 +1081,42 @@ async function extractPdfText(file){
 }
 
 /* ================= 试卷 AI 解析 ================= */
+// 布尔字段健壮解析：兼容 true/false、"true"/"false"/1/0/是/否
+function parseBool(v){
+  if(typeof v==='boolean') return v;
+  if(typeof v==='number') return v!==0;
+  if(typeof v==='string') return !/^(false|0|否|no|n|f)$/i.test(String(v).trim());
+  return !!v;
+}
+// 从 AI 返回的 JSON 中提取题目数组：兼容裸数组、{"questions":[...]}、{"list":[...]} 等包装，
+// 以及 {"1":{...},"2":{...}} 以题号为键的对象（部分模型在 json_object 模式下会把数组包进对象）
+function extractQuestionArray(parsed){
+  if(Array.isArray(parsed)) return parsed;
+  if(parsed && typeof parsed === 'object'){
+    for(const k of ['questions','list','data','items','problems','题目','题目列表']){
+      if(Array.isArray(parsed[k])) return parsed[k];
+    }
+    // 兼容 {"1":{...},"2":{...}} 以题号为键的对象
+    const keys = Object.keys(parsed).filter(k=>/^[0-9]+$/.test(k));
+    if(keys.length){
+      const vals = keys.map(k=>parsed[k]).filter(v=>v && typeof v==='object' && !Array.isArray(v));
+      if(vals.length === keys.length) return vals;
+    }
+  }
+  return null;
+}
 // 将试卷文字交给 AI，识别题目（客观/主观）、答案、得分点
 async function parseExamPaper(rawText){
   const sys = '你是一位经验丰富的教研员，擅长解析试卷结构。';
-  const user = '请解析下面这份试卷/答案解析，识别所有题目。对每道题输出：题号、题型（客观题：单选/多选/填空/判断；主观题：简答/计算/论述/作文等）、题目内容、满分、标准答案（客观题必须有明确答案）、得分点（主观题分点列出）。\n\n注意：题目、答案、得分点中的数学/化学公式请保留为 LaTeX（行内用 $...$，独立公式用 $$...$$，化学式可用 \\ce{}），不要转成纯文本。\n\n输出严格 JSON 数组，字段：\n{"num":"题号","type":"题型","objective":true/false,"question":"题目内容","fullScore":数字,"answer":"标准答案（客观题必填）","points":"得分点（主观题，分点）"}\n\n试卷内容：\n'+rawText.slice(0, 12000);
+  const user = '请解析下面这份试卷/答案解析，识别所有题目。对每道题输出：题号、题型（客观题：单选/多选/填空/判断；主观题：简答/计算/论述/作文等）、题目内容、满分、标准答案（客观题必须有明确答案）、得分点（主观题分点列出）。\n\n注意：题目、答案、得分点中的数学/化学公式请保留为 LaTeX（行内用 $...$，独立公式用 $$...$$，化学式可用 \\ce{}），不要转成纯文本。\n\n必须只输出一个 JSON 对象（不要输出数组、不要加解释文字），字段：\n{"questions":[{"num":"题号","type":"题型","objective":true或false,"question":"题目内容","fullScore":数字,"answer":"标准答案（客观题必填）","points":"得分点（主观题，分点）"}]}\n\n试卷内容：\n'+rawText.slice(0, 12000);
   const content = await callAI([{role:'system',content:sys},{role:'user',content:user}],{json:true});
-  const arr = parseAIJson(content);
-  if(!Array.isArray(arr)) throw new Error('AI 未返回题目数组');
+  const arr = extractQuestionArray(parseAIJson(content));
+  if(!arr || !arr.length) throw new Error('AI 未返回题目数组。返回内容：' + String(content).slice(0, 300));
   return arr.map((q,i) => ({
     id: uid(),
     num: q.num || String(i+1),
     type: q.type || '主观题',
-    objective: !!q.objective,
+    objective: parseBool(q.objective),
     question: q.question || '',
     text: q.question || '',   // 整卷阅卷用 text 字段，避免解析后 text 为 undefined
     fullScore: Number(q.fullScore) || 0,
@@ -1094,6 +1126,23 @@ async function parseExamPaper(rawText){
     wrong: '',
     note: ''
   }));
+}
+// 生成整卷/解析结果的 Markdown + KaTeX 预览 HTML（题目、答案、得分点均以 LaTeX 渲染）
+function buildPaperPreviewHtml(questions){
+  if(!questions || !questions.length) return '<div class="hint">暂无题目</div>';
+  return questions.map((q,i)=>{
+    const sec=[];
+    const label = '第 ' + (q.num || (i+1)) + ' 题 · ' + (q.objective ? '客观题（'+esc(q.type||'客观题')+'）' : '主观题（'+esc(q.type||'主观题')+'）') + ' · 满分 ' + (q.fullScore||0) + ' 分';
+    sec.push('<h4 style="margin:0 0 6px">'+label+'</h4>');
+    if(q.question || q.text) sec.push('<b>题目</b><br>'+renderMarkdownWithMath(q.question || q.text || ''));
+    if(q.objective){
+      if(q.answer) sec.push('<b>标准答案</b><br>'+renderMarkdownWithMath(q.answer));
+    }else{
+      if(q.reference || q.answer) sec.push('<b>参考答案</b><br>'+renderMarkdownWithMath(q.reference || q.answer || ''));
+      if(q.points) sec.push('<b>得分点</b><br>'+renderMarkdownWithMath(q.points));
+    }
+    return sec.join('<div style="height:8px"></div>');
+  }).join('<hr style="border-color:var(--border2);margin:14px 0">');
 }
 
 /* ================= 学生答案管理 ================= */
@@ -1193,6 +1242,11 @@ async function onParseGradePaper(){
     $('#gradeParsedPicker').style.display='';
     sel.onchange=()=>applyGradeParsedQuestion(+sel.value);
     applyGradeParsedQuestion(0);  // 默认第一题
+    // 解析结果 LaTeX 预览
+    $('#gradePreviewBar').style.display='';
+    const pv=$('#gradePreviewBox'), pb=$('#btnGradePreview');
+    pv.innerHTML = buildPaperPreviewHtml(questions);
+    pv.style.display=''; pb.textContent='收起预览';
     prog.textContent = '✅ 识别到 '+questions.length+' 道题，已填入第一题，可在下拉切换或手动修改。';
     prog.style.color='var(--green)';
     toast('试卷解析完成，共 '+questions.length+' 题','ok');
@@ -2229,6 +2283,11 @@ async function onParsePaper(){
     examState.questions = questions;
     saveExam(); renderExamQuestions(); renderExamStudents();
     const objCount = questions.filter(q=>q.objective).length;
+    // 解析结果 LaTeX 预览（整卷）
+    $('#paperPreviewBar').style.display='';
+    const pv=$('#paperPreviewBox'), pb=$('#btnPaperPreview');
+    pv.innerHTML = buildPaperPreviewHtml(questions);
+    pv.style.display=''; pb.textContent='收起预览';
     prog.textContent = '✅ 识别到 '+questions.length+' 道题（客观题 '+objCount+' 道，主观题 '+(questions.length-objCount)+' 道），已自动填入，可手动微调。';
     prog.style.color='var(--green)';
     toast('试卷解析完成，共 '+questions.length+' 题','ok');
@@ -2839,6 +2898,12 @@ function bindExamEvents(){
   $('#btnPickPaper').onclick=()=>$('#examPaperFile').click();
   $('#examPaperFile').addEventListener('change',onPickPaper);
   $('#btnParsePaper').onclick=onParsePaper;
+  // 整卷阅卷：解析结果 LaTeX 预览开关
+  $('#btnPaperPreview').onclick=()=>{
+    const pv=$('#paperPreviewBox'), pb=$('#btnPaperPreview');
+    if(pv.style.display==='none'){ pv.style.display=''; pb.textContent='收起预览'; }
+    else { pv.style.display='none'; pb.textContent='📋 预览解析结果（LaTeX）'; }
+  };
   // 答卷图片批量导入
   $('#btnUploadExamSheets').onclick=()=>$('#examSheetFiles').click();
   $('#examSheetFiles').addEventListener('change',onUploadExamSheets);
@@ -3013,6 +3078,12 @@ function bindEvents(){
   $('#btnPickGradePaper').onclick=()=>$('#gradePaperFile').click();
   $('#gradePaperFile').addEventListener('change',onPickGradePaper);
   $('#btnParseGradePaper').onclick=onParseGradePaper;
+  // 智能阅卷：解析结果 LaTeX 预览开关
+  $('#btnGradePreview').onclick=()=>{
+    const pv=$('#gradePreviewBox'), pb=$('#btnGradePreview');
+    if(pv.style.display==='none'){ pv.style.display=''; pb.textContent='收起预览'; }
+    else { pv.style.display='none'; pb.textContent='👁 预览解析结果（LaTeX）'; }
+  };
 }
 
 function setGradeInputMode(mode){
