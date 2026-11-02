@@ -2532,6 +2532,33 @@ function cvSplit1D(vals, gapThresh){
   for(const v of vals){if(cur.length&&v-prev>gapThresh){out.push(cur);cur=[];}cur.push(v);prev=v;}
   if(cur.length)out.push(cur);return out;
 }
+/* 自适应填涂判定（OMR-Exam 思想：把填涂状态当分类而非固定阈值）。
+   一维 K-means(k=2) 把每题选项的墨迹覆盖率分成「已填/空白」两簇，自动适应不同填涂压力与浓度；
+   无明显双峰时回退到相对比较。返回 {filled:[bool],threshold,method}。 */
+function decideFilled(ratios){
+  const n=ratios.length;
+  if(n===0)return{filled:[],threshold:0.35,method:'empty'};
+  if(n===1)return{filled:[ratios[0]>=0.3],threshold:0.3,method:'single'};
+  const hi0=Math.max(...ratios);
+  let c0=Math.min(...ratios),c1=hi0;
+  for(let it=0;it<30;it++){
+    let s0=0,n0=0,s1=0,n1=0;
+    for(const v of ratios){if(Math.abs(v-c0)<=Math.abs(v-c1)){s0+=v;n0++;}else{s1+=v;n1++;}}
+    const nc0=n0?s0/n0:c0,nc1=n1?s1/n1:c1;
+    if(Math.abs(nc0-c0)<1e-5&&Math.abs(nc1-c1)<1e-5){c0=nc0;c1=nc1;break;}
+    c0=nc0;c1=nc1;
+  }
+  const lo=Math.min(c0,c1),hi=Math.max(c0,c1),gap=hi-lo;
+  const med=cvMedian(ratios);
+  // 双峰明显（高低簇充分分离、且高簇达到可判填涂量级）才采用聚类阈值
+  if(gap>=0.08&&hi>=0.3){
+    const threshold=lo+gap*0.5;
+    return{filled:ratios.map(v=>v>=threshold),threshold,method:'kmeans'};
+  }
+  // 回退：沿用相对比较（显著高于中位数且接近最大值）
+  const threshold=Math.max(0.35,1.5*med);
+  return{filled:ratios.map(v=>v>=threshold&&v>=0.6*hi0),threshold,method:'relative'};
+}
 /* 检测选项框（圆 + 矩形），返回 cells 与灰度图/bg（调用方负责 delete gray） */
 function detectCells(cv,src,region){
   let work=src;
@@ -2562,8 +2589,23 @@ function detectCells(cv,src,region){
     approx.delete();
   }
   const dedup=[];for(const c of cells){if(c.shape==='r'){if(cells.some(o=>o.shape==='c'&&Math.hypot(o.x-c.x,o.y-c.y)<c.r+8))continue;}dedup.push(c);}
+  // Container Suppression（OMR-Exam 的 Ghost Box 过滤）：剔除「容器框」——内部完整包含
+  // 另一个更小选项框的矩形（如题目外框/选项组外框被误检为选项框）。
+  const rects=dedup.filter(c=>c.shape==='r');
+  const container=new Set();
+  for(let i=0;i<rects.length;i++){
+    const a=rects[i];
+    for(let j=0;j<rects.length;j++){
+      if(i===j)continue;
+      const b=rects[j];
+      const ax=a.x-a.w/2,ay=a.y-a.h/2,aR=ax+a.w,aB=ay+a.h;
+      const bx=b.x-b.w/2,by=b.y-b.h/2,bR=bx+b.w,bB=by+b.h;
+      if(ax<=bx&&ay<=by&&aR>=bR&&aB>=bB&&a.w>=b.w*1.3&&a.h>=b.h*1.3){container.add(a);break;}
+    }
+  }
+  const final=container.size?dedup.filter(c=>!container.has(c)):dedup;
   blur.delete();circles.delete();bin.delete();contours.delete();hier.delete();
-  return {cells:dedup,gray,W,H,bg};
+  return {cells:final,gray,W,H,bg};
 }
 /* 把检测到的选项框聚类成"题"（多栏，列优先阅读顺序） */
 function clusterQuestions(cells){
@@ -2586,7 +2628,7 @@ function clusterQuestions(cells){
 function runOMR(cv,src,region){
   const d=detectCells(cv,src,region);
   const questions=clusterQuestions(d.cells);
-  questions.forEach(r=>{const ratios=r.map(c=>c.fill),med=cvMedian(ratios),mx=Math.max(...ratios);r.forEach(c=>{c.filled=c.fill>=Math.max(0.35,1.5*med)&&c.fill>=0.6*mx;});});
+  questions.forEach(r=>{const dec=decideFilled(r.map(c=>c.fill));r.forEach((c,i)=>{c.filled=dec.filled[i];});});
   const cellCount=d.cells.length;
   d.gray.delete();
   return {W:d.W,H:d.H,questions,cellCount};
@@ -2617,10 +2659,57 @@ function alignCard(cv,src,pageW,pageH){
   gray.delete();blur.delete();bin.delete();contours.delete();hier.delete();
   return out;
 }
+/* OMR-Exam Stage 2：ORB 特征配准。不依赖外框，抗倾斜/透视/无边框/部分遮挡的拍照件。
+   把学生卡（src）通过 ORB + knnMatch ratio test + findHomography(RANSAC) 投影到模板坐标系 (pageW×pageH)。
+   返回对齐后的彩色 Mat；匹配点不足、单应矩阵无效或 inlier 比例过低时返回 null（由调用方回退到外框对齐）。 */
+function alignCardORB(cv,src,tplGray,pageW,pageH){
+  const objs=[];
+  const P=o=>{objs.push(o);return o;};
+  const done=()=>{for(const o of objs){try{o.delete();}catch(e){}}objs.length=0;};
+  try{
+    if(!tplGray||!src||tplGray.rows<=0)return null;
+    const gray=P(new cv.Mat());
+    if(src.channels()>=3)cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY);else cv.copyTo(src,gray);
+    const orb=P(new cv.ORB(2000));
+    const kp1=P(new cv.KeyPointVector()),kp2=P(new cv.KeyPointVector());
+    const d1=P(new cv.Mat()),d2=P(new cv.Mat()),mask=P(new cv.Mat());
+    orb.detectAndCompute(tplGray,mask,kp1,d1);
+    orb.detectAndCompute(gray,mask,kp2,d2);
+    if(kp1.size()<10||kp2.size()<10){done();return null;}
+    const bf=P(new cv.BFMatcher(cv.NORM_HAMMING,false));
+    // Lowe's ratio test：答题卡存在大量重复网格角点，bf.match 的「最近距离」会混入几何错误的匹配，
+    // knnMatch(k=2) 后仅保留「最优距离显著小于次优」的可靠匹配，抑制重复纹理的误匹配。
+    const knn=P(new cv.DMatchVectorVector());
+    bf.knnMatch(d1,d2,knn,2);
+    if(knn.size()<8){done();return null;}
+    const good=[];
+    for(let i=0;i<knn.size();i++){
+      const v=knn.get(i);
+      if(v.size()>=2){const m=v.get(0),n=v.get(1);if(m.distance<0.75*n.distance)good.push({q:m.queryIdx,t:m.trainIdx,d:m.distance});}
+      else if(v.size()===1){const m=v.get(0);good.push({q:m.queryIdx,t:m.trainIdx,d:m.distance});}
+    }
+    if(good.length<8){done();return null;}
+    // query 来自模板(d1)，train 来自学生卡(d2)。目标：把学生卡点映射到模板坐标系。
+    const sp=[],dp=[];
+    good.forEach(m=>{const p1=kp1.get(m.q),p2=kp2.get(m.t);sp.push(p2.pt.x,p2.pt.y);dp.push(p1.pt.x,p1.pt.y);});
+    const srcPts=P(cv.matFromArray(good.length,1,cv.CV_32FC2,sp));
+    const dstPts=P(cv.matFromArray(good.length,1,cv.CV_32FC2,dp));
+    const inlierMask=P(new cv.Mat());
+    const H=P(cv.findHomography(srcPts,dstPts,cv.RANSAC,4,inlierMask));
+    if(H.empty()){done();return null;}
+    let inliers=0;for(let i=0;i<good.length;i++){if(inlierMask.data[i])inliers++;}
+    if(inliers<8||inliers/good.length<0.3){done();return null;}
+    const out=new cv.Mat();
+    cv.warpPerspective(src,out,H,new cv.Size(pageW,pageH));
+    done();
+    return out;
+  }catch(e){done();return null;}
+}
 /* 按模板坐标确定性识别：对齐 → 逐框像素判填涂 → 裁决 */
-function recognizeTemplateGrid(cv,src,template){
+function recognizeTemplateGrid(cv,src,template,tplGray){
   const pageW=template.pageW,pageH=template.pageH;
-  let aligned=alignCard(cv,src,pageW,pageH);
+  let aligned=tplGray?alignCardORB(cv,src,tplGray,pageW,pageH):null;
+  if(!aligned)aligned=alignCard(cv,src,pageW,pageH);
   let gray=new cv.Mat();if(aligned.channels()>=3)cv.cvtColor(aligned,gray,cv.COLOR_RGBA2GRAY);else gray=aligned.clone();
   const bg=cvBgOf(cv,gray),W=aligned.cols,H=aligned.rows,sx=W/pageW,sy=H/pageH;
   const answers=[];
@@ -2631,8 +2720,8 @@ function recognizeTemplateGrid(cv,src,template){
       const fill=cvFillRect(cv,gray,W,H,bg,rx,ry,rw,rh);
       return {label:opt.label,fill};
     });
-    const ratios=opts.map(o=>o.fill),med=cvMedian(ratios),mx=Math.max(...ratios);
-    opts.forEach(o=>{o.filled=o.fill>=Math.max(0.35,1.5*med)&&o.fill>=0.6*mx;});
+    const dec=decideFilled(opts.map(o=>o.fill));
+    opts.forEach((o,i)=>{o.filled=dec.filled[i];});
     const filled=opts.filter(o=>o.filled).map(o=>o.label).filter(Boolean).sort().join('');
     const status=filled.length>1?'multiple':(filled.length===1?'ok':'blank');
     answers.push({num:q.num,value:filled,status,type:q.type||'single'});
@@ -2671,7 +2760,7 @@ async function onPickCardTemplateImage(e){
     mat.delete();d.gray.delete();
     if(!qs.length){toast('未检测到选项框，请上传清晰的空白答题卡','err');return;}
     const optCount=Math.round(qs.reduce((a,q)=>a+q.length,0)/qs.length)||4;
-    cardTplDraft={dataUrl,W,H,questions:qs};
+    cardTplDraft={dataUrl:await normalizeCardImage(dataUrl,900),W,H,questions:qs};
     $('#tplCardName').value='';
     $('#tplStartNum').value=1;
     $('#tplLabels').value='ABCD';
@@ -2690,7 +2779,7 @@ function saveCardTemplate(){
     const sorted=cells.slice().sort((a,b)=>a.x-b.x);
     return {num:String(startNum+i),type,options:sorted.map((c,j)=>({label:labels[j]||String.fromCharCode(65+j),x:(c.x-c.w/2)/d.W,y:(c.y-c.h/2)/d.H,w:c.w/d.W,h:c.h/d.H}))};
   });
-  const tpl={id:uid(),name,version:1,createdAt:new Date().toISOString(),pageW:d.W,pageH:d.H,questions};
+  const tpl={id:uid(),name,version:1,createdAt:new Date().toISOString(),pageW:d.W,pageH:d.H,dataUrl:d.dataUrl||null,questions};
   cardTemplates.push(tpl);saveCardTemplates();
   examState.cardTemplateId=tpl.id;saveExam();renderCardTemplateSelect();
   $('#cardTplModal').classList.remove('show');
@@ -2699,7 +2788,18 @@ function saveCardTemplate(){
 async function recognizePageWithTemplate(page,template,questions){
   const cv=(await getCV()).cv;cvSync=cv;
   const mat=await imageDataUrlToMat(page.dataUrl);
-  const answers=recognizeTemplateGrid(cv,mat,template);
+  // 模板图转灰度，供 ORB 特征配准（旧模板无 dataUrl 则跳过，走外框对齐兜底）
+  let tplGray=null;
+  if(template.dataUrl){
+    try{
+      const tmat=await imageDataUrlToMat(template.dataUrl);
+      tplGray=new cv.Mat();
+      if(tmat.channels()>=3)cv.cvtColor(tmat,tplGray,cv.COLOR_RGBA2GRAY);else tplGray=tmat.clone();
+      tmat.delete();
+    }catch(e){tplGray=null;}
+  }
+  const answers=recognizeTemplateGrid(cv,mat,template,tplGray);
+  if(tplGray)tplGray.delete();
   mat.delete();
   const byNum=new Map(questions.map(q=>[cardQuestionNum(q.num),q]));
   const out={};
@@ -2929,7 +3029,15 @@ async function importAnswerCards(files,context){
             prog.textContent='第 '+(gi+1)+'/'+groups.length+' 份 · 页面 '+done+'/'+total+'：正在按模板识别 '+pages[pi].fileName;
             try{
               const tAnswers=await recognizePageWithTemplate(pages[pi],tpl,questions);
-              Object.keys(tAnswers).forEach(qid=>{pages[pi].result.answers[qid]={...pages[pi].result.answers[qid],...tAnswers[qid]};});
+              Object.keys(tAnswers).forEach(qid=>{
+                const prev=pages[pi].result.answers[qid];
+                const t=tAnswers[qid];
+                // 多引擎差异检测：模板坐标识别与 OpenCV OMR 结果冲突时，降低置信度并标记复核
+                if(prev&&t&&prev.source==='omr'&&prev.value!==undefined&&t.value!==undefined&&prev.value!==t.value&&(prev.status==='ok'||prev.status==='multiple')&&(t.status==='ok'||t.status==='multiple')){
+                  t.confidence=Math.min(t.confidence||0.96,0.6);t.note=(t.note||'')+'；模板与OMR结果不一致，建议复核';t.disputed=true;
+                }
+                pages[pi].result.answers[qid]={...prev,...t};
+              });
             }catch(e){/* 模板识别失败则沿用自动识别结果 */}
           }
         }
