@@ -2418,7 +2418,7 @@ function normalizeCardPage(raw,questions,page){
     const value=Array.isArray(a.value)?a.value.join(''):String(a.value??a.answer??'').trim();
     if(!q){if(num)unknown.push({num,value});return;}
     seen.add(num);
-    answers[q.id]={value,status:cardStatus(a.status,value),confidence:cardConfidence(a.confidence),source:'ai',note:String(a.note||''),pageId:page.id};
+    answers[q.id]={value,status:cardStatus(a.status,value),confidence:cardConfidence(a.confidence),source:'vision',note:String(a.note||''),pageId:page.id};
   });
   return {name:String(raw.name||'').trim(),examNo:String(raw.examNo??raw.exam_no??'').trim(),
     attendance:['present','absent','unknown'].includes(raw.attendance)?raw.attendance:(raw.absent===true?'absent':'unknown'),
@@ -2878,10 +2878,41 @@ function mapOMRToAnswers(questions,structure,examQuestions){
     });
     const labels=filled.filter(Boolean).sort().join('');
     const status=filled.length>1?'multiple':(filled.length===1?'ok':'blank');
-    const conf=filled.length===1?Math.min(0.98,0.55+(best&&best.fill||0)*0.4):0.7;
-    out[q.id]={value:labels,status,confidence:conf,source:'omr',note:'OpenCV OMR 识别',pageId:''};
+    const bestFill=(best&&best.fill)||0;
+    const conf=filled.length===1?Math.min(0.98,0.55+bestFill*0.4):0.7;
+    out[q.id]={value:labels,status,confidence:conf,fill:bestFill,source:'omr',note:'OpenCV OMR 识别',pageId:''};
   });
   return out;
+}
+/* 选择题交叉验证裁决：OpenCV OMR 主判，大模型(vision)兜底，冲突标记复核。
+   - OMR 确定且填涂清晰 → 采用 OMR；
+   - OMR 低置信度/不确定/空白但疑似有涂 → 回退大模型 vision；
+   - 两路都确定但答案冲突 → 降置信度并标记 disputed，交由人工复核。 */
+function reconcileChoice(vision, omr){
+  const o=omr||{}, v=vision||{};
+  const oVal=String(o.value||'').trim(), vVal=String(v.value||'').trim();
+  const oDet=o.status==='ok'||o.status==='multiple';
+  const vDet=v.status==='ok'||v.status==='multiple';
+  const oConf=Number(o.confidence)||0;
+  const vConf=Number(v.confidence)||0;
+  // 1) 两路都确定但答案冲突 → 以 OMR 为基线降置信度，标记复核
+  if(oDet&&vDet&&oVal!==vVal){
+    return {...o,confidence:Math.min(oConf,0.6),disputed:true,note:'AI 与 OMR 判断不一致（AI:'+vVal+'，OMR:'+oVal+'），建议复核',source:'omr'};
+  }
+  // 2) OMR 确定且填涂清晰 → 采用 OMR
+  if(oDet&&oConf>=0.6){
+    return {...o,source:'omr'};
+  }
+  // 3) OMR 判空白但大模型有答案（疑似漏检/矛盾）→ 采用大模型并标记复核
+  if(o.status==='blank'&&vDet){
+    return {...v,confidence:Math.min(vConf,0.7),disputed:true,note:(v.note||'')+'；OMR 判空白与大模型不符，采用大模型并请复核',source:'vision'};
+  }
+  // 4) OMR 低置信度/不确定 → 回退大模型（有确定答案或确认空白均可）
+  if(vDet||v.status==='blank'){
+    return {...v,confidence:vConf,note:(v.note||'')+'；OMR 未确认，采用大模型识别',source:'vision'};
+  }
+  // 5) 兜底：采用 OMR
+  return {...o,source:'omr'};
 }
 async function recognizeAnswerCardPage(page,questions){
   const qDesc=questions.map(q=>'题号 '+q.num+'（'+(q.objective?'客观题':'主观题')+'）：'+(q.text||'').slice(0,100)).join('\n');
@@ -2891,47 +2922,56 @@ async function recognizeAnswerCardPage(page,questions){
   const parsed=parseAIJson(raw);
   if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('识别返回格式异常');
   const result=normalizeCardPage(parsed,questions,page);
-  // 选择题：OpenCV OMR 确定性识别为主，大模型识别为兜底
+  // 选择题：按任务分工——大模型负责版式/语义，OpenCV OMR 负责填涂像素判定，交叉验证裁决
   try{
     const marks=await recognizeObjectiveMarks(page,questions);
     if(marks&&marks.answers){
-      // 先写入大模型结果（兜底）
-      Object.keys(marks.answers).forEach(qid=>{result.answers[qid]={...result.answers[qid],...marks.answers[qid]};});
+      const visionByQid={};
+      Object.keys(marks.answers).forEach(qid=>{visionByQid[qid]={...marks.answers[qid]};});
       // OpenCV OMR：检测填涂网格，确定性判定
-      let omrDone=false;
+      let omrMapped=null;
       try{
         const mat=await imageDataUrlToMat(page.dataUrl);
         const omr=runOMR(getCVSync(),mat,marks.region||null);
         mat.delete();
         if(omr&&omr.questions.length&&omr.cellCount>=2){
           const mapped=mapOMRToAnswers(omr.questions,marks.structure||[],questions);
-          const mappedQids=Object.keys(mapped);
-          if(mappedQids.length){
-            mappedQids.forEach(qid=>{result.answers[qid]={...result.answers[qid],...mapped[qid],pageId:page.id};});
-            omrDone=true;
-          }
+          if(Object.keys(mapped).length)omrMapped=mapped;
         }
       }catch(e){/* OpenCV 失败则用大模型+像素兜底 */}
-      // 兜底：若 OMR 未生效，仍用大模型 bbox + 本地像素
-      if(!omrDone&&marks.optionsByQid){
-        const regions=Object.keys(marks.optionsByQid).map(qid=>({qid,options:marks.optionsByQid[qid]}));
-        const local=await analyzeOptionRegions(page.dataUrl,regions);
-        local.forEach(r=>{
-          const prev=result.answers[r.qid]||{value:'',status:'not_seen',confidence:0};
-          const d=decideChoice(r.options);
-          if(!d)return;
-          if(d.status==='ok'||d.status==='multiple'){
-            result.answers[r.qid]={...prev,value:d.value,status:d.status,confidence:d.confidence,note:d.note,source:'pixel',pageId:page.id};
-          }else if(d.status==='blank'&&(prev.status==='blank'||!prev.value)){
-            result.answers[r.qid]={...prev,value:'',status:'blank',confidence:d.confidence,note:d.note,source:'pixel',pageId:page.id};
-          }else if(d.status==='blank'&&prev.value){
-            result.answers[r.qid]={...prev,confidence:Math.min(prev.confidence||0.8,0.6),note:(prev.note||'')+'；像素分析未确认'};
-          }
+      if(omrMapped){
+        // 交叉验证：OpenCV 主判，低置信度/冲突回退大模型或标记复核
+        Object.keys(omrMapped).forEach(qid=>{
+          const final=reconcileChoice(visionByQid[qid],omrMapped[qid]);
+          result.answers[qid]={...result.answers[qid],...final,pageId:page.id};
         });
+        // OMR 未映射到的题，保留大模型结果
+        Object.keys(visionByQid).forEach(qid=>{
+          if(!omrMapped[qid])result.answers[qid]={...result.answers[qid],...visionByQid[qid]};
+        });
+      }else{
+        // OMR 未生效：用大模型结果 + 本地像素兜底
+        Object.keys(visionByQid).forEach(qid=>{result.answers[qid]={...result.answers[qid],...visionByQid[qid]};});
+        if(marks.optionsByQid){
+          const regions=Object.keys(marks.optionsByQid).map(qid=>({qid,options:marks.optionsByQid[qid]}));
+          const local=await analyzeOptionRegions(page.dataUrl,regions);
+          local.forEach(r=>{
+            const prev=result.answers[r.qid]||{value:'',status:'not_seen',confidence:0};
+            const d=decideChoice(r.options);
+            if(!d)return;
+            if(d.status==='ok'||d.status==='multiple'){
+              result.answers[r.qid]={...prev,value:d.value,status:d.status,confidence:d.confidence,note:d.note,source:'pixel',pageId:page.id};
+            }else if(d.status==='blank'&&(prev.status==='blank'||!prev.value)){
+              result.answers[r.qid]={...prev,value:'',status:'blank',confidence:d.confidence,note:d.note,source:'pixel',pageId:page.id};
+            }else if(d.status==='blank'&&prev.value){
+              result.answers[r.qid]={...prev,confidence:Math.min(prev.confidence||0.8,0.6),note:(prev.note||'')+'；像素分析未确认'};
+            }
+          });
+        }
       }
     }
   }catch(e){/* 专项识别失败则沿用首次结果 */}
-  // 考号兜底：大模型（文字模型不支持图片）识别不到考号时，用 OpenCV 数字填涂识别
+  // 考号兜底：视觉大模型识别不到考号时，用 OpenCV 数字填涂识别（仅当视觉模型未给出考号时才兜底）
   if(!result.examNo){
     try{
       const cv0=(await getCV()).cv;cvSync=cv0;
@@ -3007,7 +3047,7 @@ async function recognizeObjectiveMarks(page,questions){
   marks.forEach(m=>{
     const num=cardQuestionNum(m&&(m.num||m.questionNum||''));
     const q=byNum.get(num);if(!q)return;
-    answers[q.id]={value:String(m.value??'').trim(),status:cardStatus(m.status,m.value),confidence:cardConfidence(m.confidence),source:'ai',note:'选择题填涂专项识别',pageId:page.id};
+    answers[q.id]={value:String(m.value??'').trim(),status:cardStatus(m.status,m.value),confidence:cardConfidence(m.confidence),source:'vision',note:'选择题填涂专项识别',pageId:page.id};
     const labels=Array.isArray(m.options)?m.options.map(o=>String(o&&(o.label||o)||'').trim()).filter(Boolean):[];
     structure.push({num,options:labels.length?labels:null});
     if(Array.isArray(m.options)){
@@ -3094,7 +3134,8 @@ function validateCardStudent(student,questions){
     if(['not_seen','unclear','conflict'].includes(a.status))add(a.status==='not_seen'?'QUESTION_NOT_SEEN':'ANSWER_'+a.status.toUpperCase(),'第 '+q.num+' 题：'+({not_seen:'未在任何页面确认其作答区域',unclear:'填涂或内容无法确定',conflict:'多页答案冲突'}[a.status]),'block',q.id);
     if(a.status==='multiple'&&!/多选/.test(q.type||''))add('MULTI_MARK_SINGLE','第 '+q.num+' 题疑似单选多涂，请确认','block',q.id);
     if(/单选/.test(q.type||'')&&/^[A-Z]{2,}$/i.test(String(a.value||'').replace(/\s/g,'')))add('MULTI_MARK_SINGLE','第 '+q.num+' 题识别到多个选项，请确认是否多涂','block',q.id);
-    if(a.status==='ok'&&a.confidence<CARD_REVIEW_CONFIDENCE)add('LOW_CONFIDENCE','第 '+q.num+' 题识别置信度较低（'+Math.round(a.confidence*100)+'%）','warn',q.id);
+    if(a.disputed)add('ANSWER_DISPUTED','第 '+q.num+' 题 AI 与 OMR 判断不一致，建议人工复核','warn',q.id);
+    if(a.status==='ok'&&a.confidence<CARD_REVIEW_CONFIDENCE&&!a.disputed)add('LOW_CONFIDENCE','第 '+q.num+' 题识别置信度较低（'+Math.round(a.confidence*100)+'%）','warn',q.id);
     if(q.objective&&/选择|单选|多选/.test(q.type||'')&&a.value&&!/^[A-Z]+$/i.test(a.value.replace(/\s/g,'')))add('INVALID_OPTION','第 '+q.num+' 题选项格式异常，请确认','block',q.id);
   });
   if(student.attendance==='absent'&&answered.length)add('ABSENT_WITH_ANSWERS','标记缺考但第 '+answered.join('、')+' 题有作答内容');
@@ -3205,7 +3246,8 @@ function renderCardReviewFields(){
   $('#cardReviewIssues').innerHTML=issues.length?issues.map(i=>'<div class="review-issue '+(i.severity==='block'?'block':'')+'">'+esc(i.message)+'</div>').join(''):'<div class="hint">未发现结构性问题；仍请抽查填涂与考号。</div>';
   $('#cardReviewAnswers').innerHTML=cardReviewCtx.questions.map(q=>{
     const a=s.recognition.answers[q.id]||{value:'',status:'not_seen',confidence:0};
-    return '<div class="review-answer"><div class="qnum">第 '+esc(q.num)+' 题</div><div><textarea data-card-q="'+q.id+'" placeholder="人工修正答案">'+esc(a.value||'')+'</textarea><div class="hint">'+(a.source==='manual'?'人工修正':'AI 识别')+' · 置信度 '+Math.round((a.confidence||0)*100)+'%'+(a.note?' · '+esc(a.note):'')+'</div></div><select data-card-status="'+q.id+'">'+[['ok','已确认'],['blank','确认空白'],['unclear','无法辨认'],['multiple','多涂'],['conflict','多页冲突'],['not_seen','未找到题目']].map(([v,t])=>'<option value="'+v+'" '+(a.status===v?'selected':'')+'>'+t+'</option>').join('')+'</select></div>';
+    const srcLabel={manual:'人工修正',vision:'AI 视觉识别',omr:'OpenCV OMR',template:'模板坐标识别',pixel:'本地像素分析',ai:'AI 识别'};
+    return '<div class="review-answer"><div class="qnum">第 '+esc(q.num)+' 题</div><div><textarea data-card-q="'+q.id+'" placeholder="人工修正答案">'+esc(a.value||'')+'</textarea><div class="hint">'+(srcLabel[a.source]||'AI 识别')+' · 置信度 '+Math.round((a.confidence||0)*100)+'%'+(a.note?' · '+esc(a.note):'')+'</div></div><select data-card-status="'+q.id+'">'+[['ok','已确认'],['blank','确认空白'],['unclear','无法辨认'],['multiple','多涂'],['conflict','多页冲突'],['not_seen','未找到题目']].map(([v,t])=>'<option value="'+v+'" '+(a.status===v?'selected':'')+'>'+t+'</option>').join('')+'</select></div>';
   }).join('');
 }
 function persistCardContext(){if(cardReviewCtx.context==='exam'){saveExam();renderExamStudents();}else renderStudents();}
