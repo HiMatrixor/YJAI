@@ -35,12 +35,36 @@ function sendUpdate(channel, payload) {
 autoUpdater.on('checking-for-update', () => sendUpdate('update:status', { state: 'checking' }));
 autoUpdater.on('update-available', (info) => sendUpdate('update:status', { state: 'available', info }));
 autoUpdater.on('update-not-available', (info) => sendUpdate('update:status', { state: 'none', info }));
-autoUpdater.on('error', (err) => sendUpdate('update:status', { state: 'error', message: String(err && err.message || err) }));
 autoUpdater.on('download-progress', (p) => sendUpdate('update:status', { state: 'downloading', percent: p.percent, transferred: p.transferred, total: p.total }));
 autoUpdater.on('update-downloaded', (info) => sendUpdate('update:status', { state: 'downloaded', info }));
 
+// 错误处理：提取更详细的信息（错误码/网络错误/校验错误），并自动重试一次（应对 GitHub 资产域名偶发抖动）
+let retryCount = 0;
+autoUpdater.on('error', (err) => {
+  const raw = String(err && err.message || err);
+  let friendly = raw;
+  // 常见错误友好化
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|ECONNRESET|getaddrinfo|aborted|timed out|net::ERR/i.test(raw)) {
+    friendly = '网络连接失败（GitHub 下载域名偶发不可达）: ' + raw;
+  } else if (/cannot find latest|404|latest\.yml/i.test(raw)) {
+    friendly = '未找到更新元数据（latest.yml）: ' + raw;
+  } else if (/sha512|checksum|mismatch|integrity/i.test(raw)) {
+    friendly = '更新包校验失败: ' + raw;
+  }
+  console.error('[update error]', err && (err.stack || err.message || err));
+  // 网络类错误自动重试一次（延迟 3 秒）
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|ECONNRESET|getaddrinfo|aborted|timed out|net::ERR/i.test(raw) && retryCount < 1) {
+    retryCount++;
+    sendUpdate('update:status', { state: 'checking', retry: retryCount });
+    setTimeout(() => { try { autoUpdater.checkForUpdates(); } catch (_) {} }, 3000);
+    return;
+  }
+  retryCount = 0;
+  sendUpdate('update:status', { state: 'error', message: friendly });
+});
+
 ipcMain.handle('update:check', () => {
-  try { autoUpdater.checkForUpdates(); return true; }
+  try { retryCount = 0; autoUpdater.checkForUpdates(); return true; }
   catch (e) { return { error: String(e.message || e) }; }
 });
 ipcMain.handle('update:download', () => {
@@ -416,27 +440,25 @@ ipcMain.handle('browser:cdp-fill-top', async (e, payload) => {
     }
     const hit = o1.hit || '';
 
-    // 2) 确保焦点：点击输入框中心，再全选清空（Ctrl+A + Backspace）
+    // 2) 确保焦点：点击输入框中心
     const cx = (x != null && selector == null) ? x : o1.cx;
     const cy = (y != null && selector == null) ? y : o1.cy;
     if (cx != null && cy != null) {
       await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx, y: cy });
       await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1, buttons: 1 });
       await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1, buttons: 0 });
-      await sleepMs(80);
+      await sleepMs(120);
     }
-    // 清空现有内容
-    await wc.debugger.sendCommand('Runtime.evaluate', {
-      returnByValue: true,
-      expression: `(function(){ var el=${selector ? `document.querySelector(${JSON.stringify(selector)})` : `document.elementFromPoint(${x},${y})`}; if(!el) return 'NOEL'; if(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){ var i=el.querySelector('input,textarea'); if(i) el=i; } var proto=(el.tagName==='TEXTAREA')?HTMLTextAreaElement.prototype:HTMLInputElement.prototype; var set=Object.getOwnPropertyDescriptor(proto,'value').set; try{ if(set) set.call(el,''); else el.value=''; }catch(e){ el.value=''; } try{ el.dispatchEvent(new Event('input',{bubbles:true})); }catch(e){} return 'OK'; })()`
-    });
+    // 3) 全选现有内容（Ctrl+A），使 Input.insertText 直接覆盖选中区（受信任输入，Vue 必响应）
+    await wc.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', modifiers: 2, key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65 });
+    await wc.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', modifiers: 2, key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65 });
     await sleepMs(60);
 
-    // 3) 用 Input.insertText 敲入数字（受信任输入）
+    // 4) 用 Input.insertText 敲入数字（有选区则覆盖，无选区则插入光标处）
     await wc.debugger.sendCommand('Input.insertText', { text: val });
-    await sleepMs(150);
+    await sleepMs(180);
 
-    // 4) 回读验证
+    // 5) 回读验证（读 el.value，同时读选中状态确认已覆盖）
     let finalVal = '';
     try {
       const r3 = await wc.debugger.sendCommand('Runtime.evaluate', {
@@ -446,6 +468,21 @@ ipcMain.handle('browser:cdp-fill-top', async (e, payload) => {
       finalVal = (r3 && r3.result && r3.result.value) || '';
     } catch (_) {}
 
+    if (String(finalVal) === val) return { ok: true, hit, mode: 'cdp-keyboard' };
+    // 回读不一致：可能 insertText 追加到了旧值后面，尝试「全选+删除再 insertText」二次覆盖
+    try {
+      await wc.debugger.sendCommand('Runtime.evaluate', {
+        returnByValue: true,
+        expression: `(function(){ var el=${selector ? `document.querySelector(${JSON.stringify(selector)})` : `document.elementFromPoint(${x},${y})`}; if(!el) return 'NOEL'; if(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){ var i=el.querySelector('input,textarea'); if(i) el=i; } el.focus(); el.select(); return 'OK'; })()`
+      });
+      await wc.debugger.sendCommand('Input.insertText', { text: val });
+      await sleepMs(180);
+      const r4 = await wc.debugger.sendCommand('Runtime.evaluate', {
+        returnByValue: true,
+        expression: `(function(){ var el=${selector ? `document.querySelector(${JSON.stringify(selector)})` : `document.elementFromPoint(${x},${y})`}; if(!el) return ''; if(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){ var i=el.querySelector('input,textarea'); if(i) el=i; } return el.value; })()`
+      });
+      finalVal = (r4 && r4.result && r4.result.value) || '';
+    } catch (_) {}
     if (String(finalVal) === val) return { ok: true, hit, mode: 'cdp-keyboard' };
     return { error: 'CDP 键盘输入后回读不一致：实际=' + finalVal, hit, mode: 'cdp-keyboard' };
   } catch (err) {
