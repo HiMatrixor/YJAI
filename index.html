@@ -1742,7 +1742,16 @@ async function fillScoreInPage(score){
   if(sel){
     const r = await brRelay('fill-score', { selector:sel, score:score });
     if(r && r.error){ toast(r.error,'err'); return false; }
-    if(r && r.result==='OK') return true;
+    if(r && r.result==='OK'){ brLog('已填入分数 '+score+'（元素 '+sel+'）', 'i'); return true; }
+    // 回读值不一致：DOM 赋值可能没触发 Vue 响应式，改用 CDP 键盘输入兜底（受信任输入必响应）
+    if(r && (r.mismatch || (typeof r.result==='string' && r.result.indexOf('VALUE_MISMATCH')===0))){
+      brLog('DOM 填分回读不一致（'+sel+'），改用 CDP 键盘输入兜底', 'w');
+      const ci = brState.coords.input;
+      const cdp = await window.YJAI.cdpFillTop(ci && ci.pickType==='input' ? { x:ci.x, y:ci.y, value:String(score) } : { selector:sel, value:String(score) });
+      if(cdp && cdp.ok){ brLog('CDP 键盘输入成功：'+score+' 分（'+cdp.hit+'）', 'i'); return true; }
+      brLog('CDP 键盘输入失败: '+(cdp&&cdp.error||'未知'), 'e');
+      return true; // 填分已尝试过，不中断阅卷，交由平台侧判断
+    }
     // 顶层选择器失效（平台改版/元素已移入 iframe）：自动回退 iframe CDP 填分
     const ci = brState.coords.input;
     if((r && (r.result==='NOT_FOUND'||r.result==='NOT_INPUT')) && ci && ci.pickType==='input'){
@@ -1993,9 +2002,25 @@ function bindBrowserEvents(){
           if(/scoreInput/i.test(c)) return 'input[class*="scoreInput"]';
           return e.tagName.toLowerCase()+(c?'.'+c:'');
         }
-        var score=null, si=document.querySelectorAll('input[class*="scoreInput"]');
-        for(var i=0;i<si.length;i++){ if(vis(si[i])){ score=si[i]; break; } }
-        if(!score){ var ai=document.querySelectorAll('input'); for(var j=0;j<ai.length;j++){ var t=(ai[j].type||'text').toLowerCase(); if((t==='text'||t==='number')&&vis(ai[j])){ score=ai[j]; break; } } }
+        var score=null;
+        // 1) 优先匹配明显的分数输入框类名（scoreInput / score-input / el-input__inner 等）
+        var cands=[];
+        var si=document.querySelectorAll('input');
+        for(var i=0;i<si.length;i++){
+          var el=si[i], cls=(typeof el.className==='string'?el.className:el.getAttribute&&el.getAttribute('class')||'');
+          if(!vis(el)) continue;
+          var t=(el.type||'text').toLowerCase();
+          if(t!=='text'&&t!=='number') continue;
+          var scoreish=/score|scoreinput|得分|分数|score-input|el-input__inner/i.test(cls);
+          // 排除缩放比例/百分比输入框（后缀是 % 或 class 含 scale/zoom）
+          var isScale=/scale|zoom|percent/i.test(cls);
+          var ph=(el.getAttribute&&el.getAttribute('placeholder'))||'';
+          if(/[%％]/.test(ph)) isScale=true;
+          if(scoreish && !isScale){ score=el; break; }
+          if(!isScale) cands.push(el);
+        }
+        // 2) 兜底：取第一个非缩放输入框（Element UI 分数框通常是 el-input__inner）
+        if(!score && cands.length){ score=cands[0]; }
         var sub=null, cs=document.querySelectorAll('div,button,span,a');
         function isSub(tx){ return tx==='提交'||/^(提交分数|提交评阅|确认提交|提交答卷|提交并继续|提交本题|评阅完成|提交并下一题)$/.test(tx); }
         for(var k=0;k<cs.length;k++){ var tx=(cs[k].textContent||'').replace(/\\s+/g,''); if(isSub(tx)&&vis(cs[k])){ sub=cs[k]; break; } }

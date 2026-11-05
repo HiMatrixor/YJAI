@@ -387,6 +387,74 @@ ipcMain.handle('browser:cdp-fill', async (e, payload) => {
   }
 });
 
+/* ============ CDP 顶层输入框键盘输入（受信任输入，Vue/React 受控组件必响应） ============ */
+// 学科网 e卷通等平台：分数输入框在顶层页面（非 iframe），但 DOM 直接赋值有时触发不了 Vue 响应式。
+// 这里用浏览器级 CDP Input.insertText 敲入数字，等效真实键盘输入。
+// 入参：{ x, y, value } 坐标优先；也可传 { selector, value } 用选择器定位。
+ipcMain.handle('browser:cdp-fill-top', async (e, payload) => {
+  const { x, y, value, selector } = payload || {};
+  let wc = null;
+  const guests = webContents.getAllWebContents().filter(w => !w.isDestroyed() && w.getType() === 'webview');
+  wc = guests[0] || null;
+  if (!wc || wc.isDestroyed()) return { error: '未找到浏览器页面（webview）' };
+  const val = String(value);
+  if (!val) return { error: '缺少要填入的值' };
+  let attached = false;
+  try {
+    if (!wc.debugger.isAttached()) { wc.debugger.attach('1.3'); attached = true; }
+
+    // 1) 定位输入框：优先选择器，否则按坐标 elementFromPoint
+    const locateExpr = selector
+      ? `(function(){ var el=document.querySelector(${JSON.stringify(selector)}); if(!el) return JSON.stringify({r:'NOT_FOUND'}); function tagOf(e){ return e.tagName+(e.id?'#'+e.id:'')+(e.className&&typeof e.className==='string'?'.'+String(e.className).trim().split(/\\s+/).slice(0,2).join('.'):''); } if(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){ var i=el.querySelector('input,textarea'); if(i) el=i; else return JSON.stringify({r:'NOT_INPUT',hit:tagOf(el)}); } var rr=el.getBoundingClientRect(); el.focus(); return JSON.stringify({r:'OK',hit:tagOf(el),cx:Math.round(rr.left+rr.width/2),cy:Math.round(rr.top+rr.height/2)}); })()`
+      : `(function(){ var el=document.elementFromPoint(${x},${y}); if(!el) return JSON.stringify({r:'NONE'}); function tagOf(e){ return e.tagName+(e.id?'#'+e.id:'')+(e.className&&typeof e.className==='string'?'.'+String(e.className).trim().split(/\\s+/).slice(0,2).join('.'):''); } if(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){ var i=el.querySelector('input,textarea'); if(i) el=i; else return JSON.stringify({r:'NOT_INPUT',hit:tagOf(el)}); } var rr=el.getBoundingClientRect(); el.focus(); return JSON.stringify({r:'OK',hit:tagOf(el),cx:Math.round(rr.left+rr.width/2),cy:Math.round(rr.top+rr.height/2)}); })()`;
+
+    const r1 = await wc.debugger.sendCommand('Runtime.evaluate', { returnByValue: true, expression: locateExpr });
+    let o1 = {};
+    try { o1 = JSON.parse((r1 && r1.result && r1.result.value) || '{}'); } catch (_) {}
+    if (o1.r !== 'OK') {
+      return { error: '定位输入框失败: ' + o1.r + (o1.hit ? (' (' + o1.hit + ')') : '') };
+    }
+    const hit = o1.hit || '';
+
+    // 2) 确保焦点：点击输入框中心，再全选清空（Ctrl+A + Backspace）
+    const cx = (x != null && selector == null) ? x : o1.cx;
+    const cy = (y != null && selector == null) ? y : o1.cy;
+    if (cx != null && cy != null) {
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx, y: cy });
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1, buttons: 1 });
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1, buttons: 0 });
+      await sleepMs(80);
+    }
+    // 清空现有内容
+    await wc.debugger.sendCommand('Runtime.evaluate', {
+      returnByValue: true,
+      expression: `(function(){ var el=${selector ? `document.querySelector(${JSON.stringify(selector)})` : `document.elementFromPoint(${x},${y})`}; if(!el) return 'NOEL'; if(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){ var i=el.querySelector('input,textarea'); if(i) el=i; } var proto=(el.tagName==='TEXTAREA')?HTMLTextAreaElement.prototype:HTMLInputElement.prototype; var set=Object.getOwnPropertyDescriptor(proto,'value').set; try{ if(set) set.call(el,''); else el.value=''; }catch(e){ el.value=''; } try{ el.dispatchEvent(new Event('input',{bubbles:true})); }catch(e){} return 'OK'; })()`
+    });
+    await sleepMs(60);
+
+    // 3) 用 Input.insertText 敲入数字（受信任输入）
+    await wc.debugger.sendCommand('Input.insertText', { text: val });
+    await sleepMs(150);
+
+    // 4) 回读验证
+    let finalVal = '';
+    try {
+      const r3 = await wc.debugger.sendCommand('Runtime.evaluate', {
+        returnByValue: true,
+        expression: `(function(){ var el=${selector ? `document.querySelector(${JSON.stringify(selector)})` : `document.elementFromPoint(${x},${y})`}; if(!el) return ''; if(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){ var i=el.querySelector('input,textarea'); if(i) el=i; } return el.value; })()`
+      });
+      finalVal = (r3 && r3.result && r3.result.value) || '';
+    } catch (_) {}
+
+    if (String(finalVal) === val) return { ok: true, hit, mode: 'cdp-keyboard' };
+    return { error: 'CDP 键盘输入后回读不一致：实际=' + finalVal, hit, mode: 'cdp-keyboard' };
+  } catch (err) {
+    return { error: String(err && err.message || err) };
+  } finally {
+    if (attached) { try { wc.debugger.detach(); } catch (e2) { /* ignore */ } }
+  }
+});
+
 app.whenReady().then(() => {
   createWindow();
   app.on('activate', () => {

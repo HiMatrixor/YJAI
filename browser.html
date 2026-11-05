@@ -309,18 +309,37 @@ window.YJAI.onBrowserAction(async (msg)=>{
           if(inner) el = inner;
           else return 'NOT_INPUT';
         }
-        el.focus();
+        var v = ${JSON.stringify(String(score))};
         var proto = (el.tagName==='TEXTAREA') ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
         var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-        var v = ${JSON.stringify(String(score))};
-        if(setter) setter.call(el, v); else el.value = v;
+        el.focus();
+        // 标准 Vue v-model 赋值：用原生 value setter（绕过 Vue 重写），再派发 input 事件
+        try{ if(setter) setter.call(el, v); else el.value = v; }
+        catch(e){ el.value = v; }
         try{ el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:v})); }
         catch(e){ el.dispatchEvent(new Event('input', {bubbles:true})); }
-        el.dispatchEvent(new Event('change', {bubbles:true}));
-        return 'OK';
+        try{ el.dispatchEvent(new Event('change', {bubbles:true})); }catch(e){}
+        // 回读验证：Element UI / Vue 响应式下值可能没真正生效
+        var after = el.value;
+        if(String(after) !== String(v)){
+          // 值未生效：改用「逐字符键盘模拟」方式触发（keydown→input→keyup）
+          try{
+            el.value = '';
+            el.dispatchEvent(new Event('input', {bubbles:true}));
+            for(var k=0;k<v.length;k++){
+              var ch = v.charAt(k);
+              el.value += ch;
+              try{ el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:ch})); }
+              catch(e){ el.dispatchEvent(new Event('input', {bubbles:true})); }
+            }
+          }catch(e){}
+          after = el.value;
+        }
+        return String(after)===String(v) ? 'OK' : 'VALUE_MISMATCH:'+after;
       })()`;
       const r = await wv().executeJavaScript(code);
-      finishId(id, { ok: r==='OK', result: r });
+      const ok = (r==='OK');
+      finishId(id, { ok: ok, result: r, mismatch: (typeof r==='string' && r.indexOf('VALUE_MISMATCH')===0) });
       break;
     }
     case 'fill-score-coord': {
