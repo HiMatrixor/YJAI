@@ -571,12 +571,13 @@ window.YJAI.onBrowserAction(async (msg)=>{
               if((ty==='text'||ty==='number'||ty==='') && vis(all[b])){ scoreEl = all[b]; break; }
             }
           }
-          // 2) 提交按钮：文字精确为「提交」的可见元素（排除包含「提交上一题下一题」的容器）
+          // 2) 提交按钮：文字为「提交」或以「提交」开头的短词（学科网/e卷通的「提交分数」「提交评阅」等）
           var submitEl = null;
           var cands = document.querySelectorAll('div,button,a,span');
           for(var c=0;c<cands.length;c++){
             var t = (cands[c].textContent||'').replace(/\\s+/g,'');
-            if(t==='提交' && vis(cands[c])){ submitEl = cands[c]; break; }
+            var isSub = t==='提交'||/^(提交分数|提交评阅|确认提交|提交答卷|提交并继续|提交本题|评阅完成|提交并下一题)$/.test(t);
+            if(isSub && vis(cands[c])){ submitEl = cands[c]; break; }
           }
           // 3) 自动提交复选框
           var autoEl = null;

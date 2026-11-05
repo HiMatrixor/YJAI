@@ -1787,7 +1787,7 @@ async function clickSubmitInPage(){
   if(brState.fillMode === 'coord') return clickSubmitCoordInPage();
   // 未拾取提交按钮：跳过点击，依赖平台自动提交
   if(!brState.selectors.submit && !brState.coords.submit){
-    brLog('未拾取提交按钮，跳过提交点击（依赖平台自动提交）', 'i');
+    brLog('未拾取提交按钮，跳过提交点击。注意：学科网/e卷通等平台无「自动提交」，请点「自动识别元素」或手动拾取「提交分数」按钮，否则分数不会提交', 'w');
     return true;
   }
   // 提交按钮拾取落在跨域 iframe 内：用坐标点击（顶层 CDP 派发，由浏览器路由进 iframe）
@@ -1801,7 +1801,7 @@ async function clickSubmitInPage(){
 }
 async function clickSubmitCoordInPage(){
   const c = brState.coords.submit;
-  if(!c){ toast('请先拾取提交按钮坐标','err'); return false; }
+  if(!c){ toast('请先拾取提交按钮坐标（学科网/e卷通需点「提交分数」按钮）','err'); return false; }
   const r = await brRelay('click-coord', { x:c.x, y:c.y });
   if(r && r.error){ toast(r.error,'err'); brLog('提交点击失败: '+r.error, 'e'); return false; }
   if(r && r.result) brLog('提交点击命中元素: '+(r.result.hit||r.result)+(r.result.mode==='cdp'?'（CDP 穿透 iframe）':'')+(r.result.target?(' → '+r.result.target):'')+(r.result.iframeHit?(' └ iframe 内命中: '+r.result.iframeHit):''), 'i');
@@ -1851,6 +1851,7 @@ async function startAuto(){
   if(!brState.area){ toast('请先框选答题区域','err'); return; }
   if(brState.fillMode === 'coord'){
     if(!brState.coords.input){ toast('请先拾取给分点坐标','err'); return; }
+    if(!brState.coords.submit){ brLog('未拾取提交按钮坐标：学科网/e卷通无「自动提交」，请点「拾取提交按钮坐标」后单击「提交分数」按钮，否则填分后不会提交','w'); }
   } else {
     const hasInput = brState.selectors.input || (brState.coords.input && brState.coords.input.pickType==='input');
     if(!hasInput){ toast('请先拾取分数输入框','err'); return; }
@@ -1996,8 +1997,11 @@ function bindBrowserEvents(){
         for(var i=0;i<si.length;i++){ if(vis(si[i])){ score=si[i]; break; } }
         if(!score){ var ai=document.querySelectorAll('input'); for(var j=0;j<ai.length;j++){ var t=(ai[j].type||'text').toLowerCase(); if((t==='text'||t==='number')&&vis(ai[j])){ score=ai[j]; break; } } }
         var sub=null, cs=document.querySelectorAll('div,button,span,a');
-        for(var k=0;k<cs.length;k++){ var tx=(cs[k].textContent||'').replace(/\\s+/g,''); if(tx==='提交'&&vis(cs[k])){ sub=cs[k]; break; } }
-        return JSON.stringify({ scoreInput:sel(score), submitBtn:sel(sub), scoreTag:score?score.tagName:'', scoreCls:score?fc(score):'', subTag:sub?sub.tagName:'', subCls:sub?fc(sub):'' });
+        function isSub(tx){ return tx==='提交'||/^(提交分数|提交评阅|确认提交|提交答卷|提交并继续|提交本题|评阅完成|提交并下一题)$/.test(tx); }
+        for(var k=0;k<cs.length;k++){ var tx=(cs[k].textContent||'').replace(/\\s+/g,''); if(isSub(tx)&&vis(cs[k])){ sub=cs[k]; break; } }
+        var subX=null, subY=null;
+        if(sub){ var sr=sub.getBoundingClientRect(); subX=Math.round(sr.left+sr.width/2); subY=Math.round(sr.top+sr.height/2); }
+        return JSON.stringify({ scoreInput:sel(score), submitBtn:sel(sub), subX:subX, subY:subY, scoreTag:score?score.tagName:'', scoreCls:score?fc(score):'', subTag:sub?sub.tagName:'', subCls:sub?fc(sub):'' });
       })()`;
       const r = await Promise.race([
         brRelay('execute', code),
@@ -2009,8 +2013,9 @@ function bindBrowserEvents(){
       let okAny = false;
       if(res.scoreInput){ brState.selectors.input = res.scoreInput; okAny = true; }
       if(res.submitBtn){ brState.selectors.submit = res.submitBtn; okAny = true; }
+      if(res.subX!=null && res.subY!=null){ brState.coords.submit = { x:res.subX, y:res.subY, pickType:'click' }; }
       updatePickTags();
-      brLog('自动识别结果：分数输入框='+(res.scoreInput||'未找到')+'，提交按钮='+(res.submitBtn||'未找到'), okAny?'i':'e');
+      brLog('自动识别结果：分数输入框='+(res.scoreInput||'未找到')+'，提交按钮='+(res.submitBtn||'未找到')+(res.subX!=null?('（坐标 '+res.subX+','+res.subY+'）'):''), okAny?'i':'e');
       toast(okAny?'已自动识别并配置':'未识别到，请用诊断查看结构', okAny?'ok':'err');
       if(btn){
         btn.textContent = okAny ? '✓ 已识别' : (oldText || '🔧 自动识别元素');
