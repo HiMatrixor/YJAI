@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('YJAI', {
   isBrowserOpen: () => ipcRenderer.invoke('browser:isOpen'),
   openBrowserWindow: (url) => ipcRenderer.invoke('browser:open', url),
   focusBrowserWindow: () => ipcRenderer.invoke('browser:focus'),
+  focusBrowserWebview: () => ipcRenderer.invoke('browser:focus-webview'),
   closeBrowserWindow: () => ipcRenderer.invoke('browser:close'),
   relayToBrowser: (msg) => ipcRenderer.invoke('browser:relay', msg),
   cdpClick: (payload) => ipcRenderer.invoke('browser:cdp-click', payload),

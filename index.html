@@ -1742,9 +1742,11 @@ async function fillScoreInPage(score){
   if(sel){
     // Element UI / Vue 受控输入框：DOM 直接赋值可能只改了 el.value 却不同步 Vue 内部 data，
     // 导致提交时仍是旧值。优先用 CDP 键盘真实输入（受信任输入，Vue 必响应），DOM 赋值为兜底。
+    // 关键：先让浏览器窗口+webview 获得系统焦点，否则 webview 内的输入框没有真实焦点，CDP insertText 只改 DOM 值却触发不了 Vue 的 input 事件。
+    try{ await window.YJAI.focusBrowserWebview(); await sleep(250); }catch(e){}
     const ci = brState.coords.input;
     const cdp = await window.YJAI.cdpFillTop(ci && ci.pickType==='input' ? { x:ci.x, y:ci.y, value:String(score) } : { selector:sel, value:String(score) });
-    if(cdp && cdp.ok){ brLog('CDP 键盘输入成功：'+score+' 分（'+(cdp.hit||sel)+'）', 'i'); return true; }
+    if(cdp && cdp.ok){ brLog('CDP 键盘输入成功：'+score+' 分（'+(cdp.hit||sel)+'）'+(cdp.warn?(' ⚠'+cdp.warn):''), cdp.warn?'w':'i'); return true; }
     if(cdp && cdp.error){ brLog('CDP 键盘输入失败（'+(cdp.error||'')+'），回退 DOM 赋值', 'w'); }
     // 兜底：DOM 赋值
     const r = await brRelay('fill-score', { selector:sel, score:score });

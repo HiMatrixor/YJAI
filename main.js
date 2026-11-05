@@ -173,6 +173,17 @@ ipcMain.handle('browser:focus', () => {
   return false;
 });
 
+// 聚焦浏览器窗口内的 webview 元素（让 guest 获得输入焦点，CDP 键盘输入才能生效）
+ipcMain.handle('browser:focus-webview', () => {
+  const bw = getBrowserWin();
+  if (!bw) return false;
+  bw.show();
+  bw.focus();
+  // 通过渲染进程让 webview 元素 focus
+  bw.webContents.executeJavaScript(`(function(){ var wv=document.querySelector('webview'); if(wv){ try{ wv.focus(); }catch(e){} return !!wv; } return false; })()`).catch(()=>{});
+  return true;
+});
+
 ipcMain.handle('browser:close', () => {
   const bw = getBrowserWin();
   if (bw) { bw.close(); return true; }
@@ -418,14 +429,19 @@ ipcMain.handle('browser:cdp-fill', async (e, payload) => {
 ipcMain.handle('browser:cdp-fill-top', async (e, payload) => {
   const { x, y, value, selector } = payload || {};
   let wc = null;
+  // 优先选择「非空白」的 webview guest（已加载阅卷页面的那个），避免拿到 about:blank 的空 webview
   const guests = webContents.getAllWebContents().filter(w => !w.isDestroyed() && w.getType() === 'webview');
-  wc = guests[0] || null;
+  if (guests.length) {
+    wc = guests.find(w => { try { const u = w.getURL(); return u && !/^about:blank/.test(u) && u !== ''; } catch (_) { return false; } }) || guests[0];
+  }
   if (!wc || wc.isDestroyed()) return { error: '未找到浏览器页面（webview）' };
   const val = String(value);
   if (!val) return { error: '缺少要填入的值' };
   let attached = false;
   try {
     if (!wc.debugger.isAttached()) { wc.debugger.attach('1.3'); attached = true; }
+    // 先聚焦 webview guest 的页面（确保 CDP Input 事件能作用到输入框）
+    try { await wc.debugger.sendCommand('Page.bringToFront'); } catch (_) {}
 
     // 1) 定位输入框：优先选择器，否则按坐标 elementFromPoint
     const locateExpr = selector
@@ -440,14 +456,17 @@ ipcMain.handle('browser:cdp-fill-top', async (e, payload) => {
     }
     const hit = o1.hit || '';
 
-    // 2) 确保焦点：点击输入框中心
+    // 2) 确保焦点：用 CDP 真实鼠标点击输入框中心（关键：Runtime.evaluate 的 el.focus() 不够，
+    //    必须真实点击才能让 webview 内的输入框获得页面焦点，后续 Input.insertText 才能触发 Vue input 事件）
     const cx = (x != null && selector == null) ? x : o1.cx;
     const cy = (y != null && selector == null) ? y : o1.cy;
     if (cx != null && cy != null) {
+      // 先确保 webview 页面在前台
+      try { await wc.debugger.sendCommand('Page.bringToFront'); } catch (_) {}
       await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx, y: cy });
       await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', clickCount: 1, buttons: 1 });
       await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', clickCount: 1, buttons: 0 });
-      await sleepMs(120);
+      await sleepMs(150);
     }
     // 3) 全选现有内容（Ctrl+A），使 Input.insertText 直接覆盖选中区（受信任输入，Vue 必响应）
     await wc.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', modifiers: 2, key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65 });
@@ -458,17 +477,44 @@ ipcMain.handle('browser:cdp-fill-top', async (e, payload) => {
     await wc.debugger.sendCommand('Input.insertText', { text: val });
     await sleepMs(180);
 
-    // 5) 回读验证（读 el.value，同时读选中状态确认已覆盖）
+    // 5) 回读验证：读 el.value，同时读 document.activeElement 确认焦点，并尝试读 Vue 组件绑定值
     let finalVal = '';
+    let focusOk = false;
     try {
       const r3 = await wc.debugger.sendCommand('Runtime.evaluate', {
         returnByValue: true,
-        expression: `(function(){ var el=${selector ? `document.querySelector(${JSON.stringify(selector)})` : `document.elementFromPoint(${x},${y})`}; if(!el) return ''; if(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){ var i=el.querySelector('input,textarea'); if(i) el=i; } return el.value; })()`
+        expression: `(function(){ var el=${selector ? `document.querySelector(${JSON.stringify(selector)})` : `document.elementFromPoint(${x},${y})`}; if(!el) return ''; if(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){ var i=el.querySelector('input,textarea'); if(i) el=i; } var ae=document.activeElement; return JSON.stringify({v:el.value, focus:(ae===el), aeTag:(ae?ae.tagName:''), aeId:(ae&&ae.id?ae.id:'')}); })()`
       });
-      finalVal = (r3 && r3.result && r3.result.value) || '';
+      let o = {};
+      try { o = JSON.parse((r3 && r3.result && r3.result.value) || '{}'); } catch (_) {}
+      finalVal = o.v || '';
+      focusOk = !!o.focus;
     } catch (_) {}
 
-    if (String(finalVal) === val) return { ok: true, hit, mode: 'cdp-keyboard' };
+    if (String(finalVal) === val) {
+      // 值正确。若焦点不在输入框，说明 insertText 可能只改了 DOM 值没触发 Vue，改用逐字符 dispatchKeyEvent 重输一遍
+      if (focusOk) return { ok: true, hit, mode: 'cdp-keyboard' };
+      // 焦点不对：用逐字符 keyDown(char)+keyUp 键盘序列重输（更接近真实键盘，能触发 keydown/keypress/input 完整链）
+      try {
+        const clearExpr = `(function(){ var el=${selector ? `document.querySelector(${JSON.stringify(selector)})` : `document.elementFromPoint(${x},${y})`}; if(!el) return 'NOEL'; if(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){ var i=el.querySelector('input,textarea'); if(i) el=i; } el.focus(); el.select(); return 'OK'; })()`;
+        await wc.debugger.sendCommand('Runtime.evaluate', { returnByValue: true, expression: clearExpr });
+        await sleepMs(80);
+        for (const ch of val) {
+          await wc.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, text: ch, windowsVirtualKeyCode: 0, nativeVirtualKeyCode: 0 });
+          await wc.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: ch, windowsVirtualKeyCode: 0, nativeVirtualKeyCode: 0 });
+          await sleepMs(30);
+        }
+        await sleepMs(150);
+        const r5 = await wc.debugger.sendCommand('Runtime.evaluate', {
+          returnByValue: true,
+          expression: `(function(){ var el=${selector ? `document.querySelector(${JSON.stringify(selector)})` : `document.elementFromPoint(${x},${y})`}; if(!el) return ''; if(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){ var i=el.querySelector('input,textarea'); if(i) el=i; } var ae=document.activeElement; return JSON.stringify({v:el.value, focus:(ae===el)}); })()`
+        });
+        let o5 = {};
+        try { o5 = JSON.parse((r5 && r5.result && r5.result.value) || '{}'); } catch (_) {}
+        if (String(o5.v) === val) return { ok: true, hit, mode: 'cdp-char', focus: !!o5.focus };
+      } catch (_) {}
+      return { ok: true, hit, mode: 'cdp-keyboard', warn: '焦点未落在输入框' };
+    }
     // 回读不一致：可能 insertText 追加到了旧值后面，尝试「全选+删除再 insertText」二次覆盖
     try {
       await wc.debugger.sendCommand('Runtime.evaluate', {

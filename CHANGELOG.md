@@ -1,5 +1,13 @@
 # YJAI · AI 阅卷助手 更新日志
 
+## v1.9.9（2026-11-05）
+
+**浏览器阅卷：修复「键盘给分」模式 CDP 键盘输入不生效（webview 焦点缺失）**
+
+- 核心修复：填分前先聚焦浏览器窗口 + webview 元素（新增 `focusBrowserWebview`），让 webview guest 获得真实系统焦点，否则 CDP `Input.insertText`/`dispatchKeyEvent` 只改 DOM 值却触发不了 Vue 的 `input` 事件（表现为「日志显示输入成功但平台输入框没数字」）。
+- `cdpFillTop` 增强：优先选择「已加载阅卷页」的非空 webview guest（避免拿到 about:blank 空 webview），派发前 `Page.bringToFront`。
+- 键盘输入链路：CDP 真实点击聚焦 → Ctrl+A 全选 → `Input.insertText` 覆盖；回读确认焦点，焦点不对则逐字符 `dispatchKeyEvent`（keyDown+char+keyUp）重输兜底。
+
 ## v1.9.8（2026-11-05）
 
 **浏览器阅卷：元素模式填分改用 CDP 键盘真实输入（修复 Vue 响应式不同步）**
