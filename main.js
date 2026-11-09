@@ -880,21 +880,63 @@ function scoreFindExpr(hintX, hintY) {
   })()`;
 }
 function submitFindExpr() {
+  // v1.9.16：各平台的提交按钮文字不统一（「提交分数」「提交批改」「确认批阅」「保存并下一位」…），
+  // 精确白名单太容易漏。改成「按语义打分 + 可点击性过滤 + 黑名单排除」，并且找不到时把候选打回日志。
   return `(function(){
-    function vis(e){ if(!e) return false; var r=e.getBoundingClientRect(); if(r.width<8||r.height<8) return false; var s=null; try{ s=getComputedStyle(e); }catch(err){} return !s || (s.visibility!=='hidden' && s.display!=='none'); }
+    function vis(e){ if(!e) return false; var r=e.getBoundingClientRect(); if(r.width<8||r.height<8) return false; var s=null; try{ s=getComputedStyle(e); }catch(err){} if(!s) return true; if(s.visibility==='hidden'||s.display==='none'||s.pointerEvents==='none') return false; if(String(s.opacity)==='0') return false; return true; }
     function tagOf(e){ var c=(e.className&&typeof e.className==='string')?e.className:''; return e.tagName+(e.id?'#'+e.id:'')+(c?'.'+String(c).trim().split(/\\s+/).slice(0,2).join('.'):''); }
     function depth(e){ var d=0,p=e; while(p&&p.parentElement){ d++; p=p.parentElement; } return d; }
-    function isSub(tx){ return tx==='提交'||/^(提交分数|提交评阅|确认提交|提交答卷|提交并继续|提交本题|评阅完成|提交并下一题|保存并提交)$/.test(tx); }
-    var list=document.querySelectorAll('button,span,a,li,div'), best=null;
-    for(var i=0;i<list.length;i++){
-      var e=list[i], tx=String(e.textContent||'').replace(/\\s+/g,'');
-      if(!isSub(tx)||!vis(e)) continue;
-      if(!best || depth(e)>depth(best)) best=e;
+    function norm(t){ return String(t==null?'':t).replace(/[\\s\\u00a0\\u3000]+/g,''); }
+    function cls(e){ return (e.className&&typeof e.className==='string')?e.className:''; }
+    function clickable(e){
+      var tag=e.tagName;
+      if(tag==='BUTTON') return true;
+      if(tag==='A') return true;
+      if(e.getAttribute&&String(e.getAttribute('role')||'')==='button') return true;
+      if(e.hasAttribute&&e.hasAttribute('onclick')) return true;
+      if(/btn|button|submit|confirm/i.test(cls(e)+' '+String(e.id||''))) return true;
+      try{ if(getComputedStyle(e).cursor==='pointer') return true; }catch(err){}
+      return false;
     }
-    window.__yjaiSub = best;
-    if(!best) return JSON.stringify({r:'NO_SUBMIT', url:location.href, isTop:(window.top===window.self)});
+    // 「满分 / 零分」与「提交分数」常共用 span.set-btn，误点一次就直接给满分 —— 黑名单优先
+    var BAD=/满分|零分|取消|关闭|清空|重置|重做|返回|上一步|上一份|上一题|删除|撤销|收藏|批注|标记|切换|展开|收起|回退|自动/;
+    function scoreOf(e,tx){
+      if(!tx||tx.length>12) return 0;
+      if(BAD.test(tx)) return 0;
+      var key=cls(e)+' '+String(e.id||'');
+      if(/提交/.test(tx)) return 12;
+      if(/submit|confirm|tijiao/i.test(key)) return 11;
+      if(/^(确认|确定)/.test(tx)) return 8;
+      if(/确认|保存|完成/.test(tx)) return 6;
+      if(/^(下一位|下一份|下一题|下个)/.test(tx)) return 5;
+      return 0;
+    }
+    var list=document.querySelectorAll('button,a,span,div,li,input[type=button],input[type=submit]'), best=null, bestS=0;
+    var relC=[], btnNames=[];
+    for(var i=0;i<list.length;i++){
+      var e=list[i];
+      if(!vis(e)) continue;
+      var dis=!!(e.disabled || (e.getAttribute&&String(e.getAttribute('aria-disabled'))==='true'));
+      var tx=norm(e.tagName==='INPUT'?(e.value||''):e.textContent);
+      if(!tx && e.getAttribute){ tx=norm(e.getAttribute('title')||e.getAttribute('aria-label')||''); }  // 图标按钮
+      if(!tx||tx.length>14) continue;
+      if(btnNames.length<16 && (e.tagName==='BUTTON'||/btn|button/i.test(cls(e)))) btnNames.push(tx.slice(0,10));
+      var s=scoreOf(e,tx);
+      if(!s) continue;
+      if(!clickable(e)) continue;
+      if(relC.length<10) relC.push(tagOf(e)+'='+tx.slice(0,12)+(dis?'(disabled)':''));
+      if(dis) continue;                                          // 禁用的提交按钮不能点，但必须记录进候选
+      var r=e.getBoundingClientRect();
+      if(r.top>=-2 && r.bottom<=window.innerHeight+2) s+=0.5;   // 视口内优先（提交常在底部固定栏）
+      if(!best || s>bestS || (s===bestS && depth(e)>depth(best))){ best=e; bestS=s; }
+    }
+    window.__yjaiSub=best;
+    if(!best){
+      var cand=relC.length?relC.join('|'):('BUTTONS['+btnNames.join('|')+']');
+      return JSON.stringify({r:'NO_SUBMIT', url:location.href, isTop:(window.top===window.self), cands:cand});
+    }
     var rb=best.getBoundingClientRect();
-    return JSON.stringify({r:'OK', hit:tagOf(best), text:String(best.textContent||'').replace(/\\s+/g,'').slice(0,14), x:Math.round(rb.left+rb.width/2), y:Math.round(rb.top+rb.height/2), url:location.href, isTop:(window.top===window.self)});
+    return JSON.stringify({r:'OK', hit:tagOf(best), text:norm(best.textContent).slice(0,14), x:Math.round(rb.left+rb.width/2), y:Math.round(rb.top+rb.height/2), url:location.href, isTop:(window.top===window.self)});
   })()`;
 }
 function detectFrameExpr() {
@@ -903,7 +945,7 @@ function detectFrameExpr() {
     function tagOf(e){ var c=(e.className&&typeof e.className==='string')?e.className:''; return e.tagName+(e.id?'#'+e.id:'')+(c?'.'+String(c).trim().split(/\\s+/).slice(0,2).join('.'):''); }
     function ctr(e){ var r=e.getBoundingClientRect(); return {x:Math.round(r.left+r.width/2), y:Math.round(r.top+r.height/2)}; }
     function depth(e){ var d=0,p=e; while(p&&p.parentElement){ d++; p=p.parentElement; } return d; }
-    function isSub(tx){ return tx==='提交'||/^(提交分数|提交评阅|确认提交|提交答卷|提交并继续|提交本题|评阅完成|提交并下一题|保存并提交)$/.test(tx); }
+    function isSub(tx){ return !!tx && tx.length<=12 && !/满分|零分|取消|关闭|清空|重置|重做|返回|上一步|上一份|上一题|删除|撤销|收藏|批注|标记|切换|自动/.test(tx) && /提交|确认|确定|保存|完成|下一位|下一份|下一题|下个/.test(tx); }
     var score=null, fill=[], ins=document.querySelectorAll('input,textarea');
     for(var i=0;i<ins.length;i++){
       var el=ins[i]; if(!vis(el)||el.disabled||el.readOnly) continue;
@@ -941,13 +983,17 @@ ipcMain.handle('browser:cdp-submit', async () => {
     const frames = await listFrames(wc);
     const diag = 'frames=' + frames.length + '[' + frames.map(f => f.depth + ':' + shortUrl(f.url)).join(' ') + ']';
     const ordered = frames.filter(f => f.depth > 0).concat(frames.filter(f => f.depth === 0));
+    const notFound = [];
     for (const f of ordered) {
       let ctx = null;
       try { ctx = await openFrameWorld(wc, f.id, 'yjai_sub_' + f.depth); } catch (_) { continue; }
       if (!ctx) continue;
       let info = null;
       try { info = JSON.parse(String((await evalCtx(wc, ctx, submitFindExpr())) || '')); } catch (_) { info = null; }
-      if (!info || info.r !== 'OK') continue;
+      if (!info || info.r !== 'OK') {
+        if (info && info.cands) notFound.push('d' + f.depth + ':' + info.cands);
+        continue;
+      }
       let dispatched = '';
       try {
         dispatched = String((await evalCtx(wc, ctx, `(function(){
@@ -965,7 +1011,7 @@ ipcMain.handle('browser:cdp-submit', async () => {
       } catch (_) {}
       return { ok: true, hit: (info.hit || '提交按钮') + (f.depth > 0 ? (' @iframe(' + shortUrl(f.url) + ')') : ' @top'), text: info.text || '', mode: 'dom-click', dispatched: dispatched, diag: diag };
     }
-    return { ok: false, error: 'NOT_FOUND', diag: diag };
+    return { ok: false, error: 'NOT_FOUND', diag: diag, cands: notFound.join(' || ') };
   } catch (err) {
     return { error: String(err && err.message || err) };
   } finally {

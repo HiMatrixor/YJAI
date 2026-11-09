@@ -1850,6 +1850,7 @@ async function submitViaFrames(){
     }
     if(r && r.error && r.error !== 'NOT_FOUND') brLog('提交点击失败: '+r.error, 'w');
     if(r && r.diag) brLog('帧诊断：'+String(r.diag).slice(0,320), 'i');
+    if(r && r.cands) brLog('提交候选：'+String(r.cands).slice(0,320), 'w');
   }catch(e){ brLog('提交点击异常: '+e.message, 'w'); }
   return false;
 }
@@ -2139,7 +2140,8 @@ function bindBrowserEvents(){
         // 2) 兜底：取第一个非缩放输入框（Element UI 分数框通常是 el-input__inner）
         if(!score && cands.length){ score=cands[0].el; scoreOff=cands[0].off; }
         var sub=null, subOff=null;
-        function isSub(tx){ return tx==='提交'||/^(提交分数|提交评阅|确认提交|提交答卷|提交并继续|提交本题|评阅完成|提交并下一题)$/.test(tx); }
+        // v1.9.16：提交按钮文字各平台不统一（提交批改 / 确认批阅 / 保存并下一位…），用语义+黑名单
+        function isSub(tx){ return !!tx && tx.length<=12 && !/满分|零分|取消|关闭|清空|重置|重做|返回|上一步|上一份|上一题|删除|撤销|收藏|批注|标记|切换|自动/.test(tx) && /提交|确认|确定|保存|完成|下一位|下一份|下一题|下个/.test(tx); }
         for(var d2=0; d2<DS.length && !sub; d2++){
           var cs=DS[d2].doc.querySelectorAll('div,button,span,a');
           for(var k=0;k<cs.length;k++){ var tx=(cs[k].textContent||'').replace(/\\s+/g,''); if(isSub(tx)&&vis(cs[k])){ sub=cs[k]; subOff=DS[d2]; break; } }
