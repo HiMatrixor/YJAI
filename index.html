@@ -1784,40 +1784,41 @@ async function fillScoreInPage(score){
   return fillScoreInPageIframe(score);
 }
 async function fillScoreInPageIframe(score){
-  // 关键修复（v1.9.13）：iframe 内输入框同样要用【顶层 CDP 真实键盘输入】。
-  // 旧逻辑只调 cdpFill（找 iframe 渲染目标 → 在 target 内 DOM 赋值），17阅卷 / oemimoms
-  // 等平台找不到对应 target 就直接失败，键盘输入一次都没被调用，于是报「分数输入框未找到」。
+  // v1.9.15：不再依赖拾取坐标。17阅卷的 webview 顶层是 oss.17yuejuan.cn，打分板 iframe 是
+  // web.17yuejuan.cn —— 同站不同源 → 同进程、没有独立 iframe target，v1.9.14 的「attach
+  // 会话」永远抓不到；坐标又常在换题/改版后失效。现在由主进程按 frame tree 进子帧语义定位
+  // 输入框，focus 后键入并回读验证，失败就明确报错，不再假成功。
   const ci = brState.coords.input;
-  if(!ci || ci.pickType!=='input'){ toast('请先拾取分数输入框','err'); return false; }
   const val = String(score);
-  // webview 三层焦点：窗口 → webview 元素 → guest 页面，缺一层键盘事件就落不到输入框
+  // webview 三层焦点：窗口 → webview 元素 → guest 页面，缺一层键盘事件都落不到输入框
   try{ await window.YJAI.focusBrowserWebview(); await sleep(220); }catch(e){}
   let kb = null;
-  try{ kb = await window.YJAI.cdpFillIframe({ x:ci.x, y:ci.y, value:val }); }
+  try{ kb = await window.YJAI.cdpFillIframe(Object.assign({ value:val }, (ci && ci.x!=null && ci.y!=null) ? { x:ci.x, y:ci.y } : {})); }
   catch(e){ kb = { error:String(e && e.message || e) }; }
   if(kb && kb.ok){
-    brLog('CDP 键盘输入成功：'+score+' 分（iframe 内 '+(kb.hit||'')+'，'+(kb.verified?'已回读确认':'顶层派发')+'）'+(kb.warn?(' ⚠'+kb.warn):''), kb.warn?'w':'i');
+    const MODE_TX = {
+      'frame-keyboard': 'iframe 内真实键盘输入',
+      'frame-keyboard-chars': 'iframe 内逐字符键盘输入',
+      'frame-dom-setter': 'iframe 内 DOM 赋值 + 受控事件',
+      'keyboard-coord': '坐标处键盘给分'
+    };
+    const modeTx = MODE_TX[kb.mode] || (kb.mode || 'CDP');
+    brLog('填分成功：'+score+' 分（'+(kb.hit||'分数输入框')+'，'+modeTx+(kb.verified?'，已回读确认':'，未回读')+'）'+(kb.warn?(' ⚠'+kb.warn):''), (kb.warn||!kb.verified)?'w':'i');
+    if(kb.note) brLog(kb.note, 'w');
+    if(kb.diag) brLog('帧诊断：'+String(kb.diag).slice(0,320), 'i');
     return true;
   }
-  if(kb && kb.error) brLog('iframe 顶层键盘输入未成功（'+kb.error+'），回退 iframe target 赋值', 'w');
-  // 兜底：旧路径（同源 iframe 顶层递归赋值 / 跨域 iframe target 内赋值）
-  let r = null;
-  try{ r = await window.YJAI.cdpFill({ x:ci.x, y:ci.y, value:val }); }
-  catch(e){ r = { error:String(e && e.message || e) }; }
-  if(r && r.ok){
-    brLog('iframe 内输入框已赋值 '+score+' 分（命中: '+(r.hit||'?')+(r.mode?('，'+r.mode):'')+'）', 'i');
-    return true;
+  if(kb && kb.error) brLog('iframe 内填分失败: '+kb.error, 'e');
+  if(kb && kb.note) brLog(kb.note, 'w');
+  if(kb && kb.diag) brLog('帧诊断：'+String(kb.diag).slice(0,320), 'w');
+  // 兜底：同源 iframe 顶层递归 DOM 赋值（只对可读 contentDocument 的帧有效）
+  if(ci && ci.pickType === 'input' && ci.x!=null && ci.y!=null){
+    let r = null;
+    try{ r = await window.YJAI.cdpFill({ x:ci.x, y:ci.y, value:val }); }
+    catch(e){ r = { error:String(e && e.message || e) }; }
+    if(r && r.ok){ brLog('iframe 内输入框已赋值 '+score+' 分（命中: '+(r.hit||'?')+(r.mode?('，'+r.mode):'')+'）', 'i'); return true; }
   }
-  if(r && r.error){
-    // 回读验证不一致：多为平台自动提交后页面已切换，填分本身已生效，不中断阅卷
-    if(/VALUE_MISMATCH/.test(r.error)){
-      brLog('填分已执行（回读值不一致）。若平台开启了自动提交，提交后页面切换属正常现象，继续下一份', 'w');
-      return true;
-    }
-    brLog('iframe 内填分失败: '+r.error, 'e');
-    toast('填分失败：'+r.error+'（可点「测试提交」看日志，或改用键盘给分坐标模式）','err');
-    return false;
-  }
+  toast('填分失败：'+((kb&&kb.error)||'未能把分数送进输入框'), 'err');
   return false;
 }
 async function fillScoreCoordInPage(score){
@@ -1838,17 +1839,31 @@ async function fillScoreCoordInPage(score){
   if(r && r.result) brLog('连点 '+(r.result.clicked||times)+' 次，命中元素: '+r.result.hit+(r.result.mode==='cdp'?'（CDP 穿透 iframe）':'')+(r.result.target?(' → '+r.result.target):'')+(r.result.iframeHit?(' └ iframe 内命中: '+r.result.iframeHit):''), 'i');
   return !!(r && r.ok);
 }
+async function submitViaFrames(){
+  // 提交按钮在 iframe 内时，按文字语义精确点到元素本身，不用坐标 ——
+  // 「提交分数 / 满分 / 零分」常共用 span.set-btn，坐标点偏一点就会点成「满分」。
+  try{
+    const r = await window.YJAI.cdpSubmit();
+    if(r && r.ok){
+      brLog('提交点击：命中「'+(r.text||r.hit||'提交')+'」（'+(r.hit||'')+'，DOM 点击）', 'i');
+      return true;
+    }
+    if(r && r.error && r.error !== 'NOT_FOUND') brLog('提交点击失败: '+r.error, 'w');
+    if(r && r.diag) brLog('帧诊断：'+String(r.diag).slice(0,320), 'i');
+  }catch(e){ brLog('提交点击异常: '+e.message, 'w'); }
+  return false;
+}
 async function clickSubmitInPage(){
   if(brState.fillMode === 'coord') return clickSubmitCoordInPage();
+  // 提交按钮在 iframe 内：直接走语义定位，别用可能已失效的坐标
+  if(brState.coords.submit && brState.coords.submit.inFrame) return clickSubmitCoordInPage();
   // 未拾取提交按钮：跳过点击，依赖平台自动提交
   if(!brState.selectors.submit && !brState.coords.submit){
     brLog('未拾取提交按钮，跳过提交点击。注意：学科网/e卷通等平台无「自动提交」，请点「自动识别元素」或手动拾取「提交分数」按钮，否则分数不会提交', 'w');
     return true;
   }
-  // 提交按钮拾取落在跨域 iframe 内：用坐标点击（顶层 CDP 派发，由浏览器路由进 iframe）
-  if(!brState.selectors.submit && brState.coords.submit) return clickSubmitCoordInPage();
   const sel = brState.selectors.submit;
-  if(!sel){ toast('请先拾取提交按钮','err'); return false; }
+  if(!sel) return clickSubmitCoordInPage();
   const r = await brRelay('click-submit', sel);
   if(r && r.error){ toast(r.error,'err'); return false; }
   if(r && r.result==='NOT_FOUND'){ toast('提交按钮未找到，页面可能已变化，请重新拾取','err'); brLog('提交按钮未找到（'+sel+'）','e'); return false; }
@@ -1857,9 +1872,22 @@ async function clickSubmitInPage(){
 async function clickSubmitCoordInPage(){
   const c = brState.coords.submit;
   if(!c){ toast('请先拾取提交按钮坐标（学科网/e卷通需点「提交分数」按钮）','err'); return false; }
+  if(c.inFrame){
+    if(await submitViaFrames()) return true;
+    // 语义没找到就不盲点坐标：点偏了可能落在「满分」上，宁可报错让人工确认
+    brLog('iframe 内未按文字找到提交按钮，已停止（避免误点「满分」）。请手动拾取提交按钮或确认按钮文字','e');
+    toast('未找到提交按钮（iframe 内），已停止以避免误点「满分」','err');
+    return false;
+  }
   const r = await brRelay('click-coord', { x:c.x, y:c.y });
   if(r && r.error){ toast(r.error,'err'); brLog('提交点击失败: '+r.error, 'e'); return false; }
-  if(r && r.result) brLog('提交点击命中元素: '+(r.result.hit||r.result)+(r.result.mode==='cdp'?'（CDP 穿透 iframe）':'')+(r.result.target?(' → '+r.result.target):'')+(r.result.iframeHit?(' └ iframe 内命中: '+r.result.iframeHit):''), 'i');
+  if(r && r.result){
+    const rr = r.result;
+    const modeTx = rr.mode==='iframe-session' ? '（已在 iframe 会话内派发）' : (rr.mode==='cdp-top' ? '（仅顶层派发 ⚠）' : '');
+    brLog('提交点击命中元素: '+(rr.hit||'')+modeTx+(rr.target?(' → '+rr.target):'')+(rr.iframeHit?(' └ iframe 内命中: '+rr.iframeHit):'')+(rr.warn?(' ⚠'+rr.warn):''), rr.warn?'w':'i');
+    if(rr.warn) brLog('提交可能未送达平台，请在浏览器窗口确认本题是否已提交', 'w');
+    if(rr.diag) brLog('iframe 会话诊断：'+String(rr.diag).slice(0,320), 'i');
+  }
   return !!(r && r.ok);
 }
 async function testSubmit(){
@@ -2142,6 +2170,33 @@ function bindBrowserEvents(){
       if(r && r.error){ brLog('自动识别失败: '+r.error,'e'); toast(r.error,'err'); return; }
       let res = {};
       try{ res = JSON.parse((r && r.result) || '{}'); }catch(e){ res = {}; }
+      // v1.9.15：打分板在同站不同源的 iframe 里（17阅卷）时，顶层 querySelector 扫不到。
+      // 按 frame tree 逐帧补查，且帧内结果优先于顶层结果——顶层页面自己也有输入框，容易误判。
+      if(IS_DESKTOP){
+        try{
+          const ext = await window.YJAI.cdpDetectIframes();
+          if(ext && ext.error) brLog('iframe 内识别失败: '+ext.error, 'w');
+          else if(ext && ext.results && ext.results.length){
+            const rs = ext.results;
+            const sco = rs.find(d=>!d.isTop && d.score) || rs.find(d=>d.score);
+            const sub = rs.find(d=>!d.isTop && d.submit) || rs.find(d=>d.submit);
+            if(sco && sco.score){
+              res.scoreX = Number((sco.off&&sco.off.x)||0) + Number(sco.score.x);
+              res.scoreY = Number((sco.off&&sco.off.y)||0) + Number(sco.score.y);
+              res.scoreInFrame = !sco.isTop; res.frameSrc = sco.url || '';
+              res.scoreTag = sco.score.tag || res.scoreTag;
+            }
+            if(sub && sub.submit){
+              res.subX = Number((sub.off&&sub.off.x)||0) + Number(sub.submit.x);
+              res.subY = Number((sub.off&&sub.off.y)||0) + Number(sub.submit.y);
+              res.subInFrame = !sub.isTop; res.subTag = sub.submit.tag || res.subTag;
+              res.subText = sub.submit.text || '';
+            }
+            brLog('iframe 内识别到：分数框='+(sco&&sco.score?(sco.score.tag+' @'+(sco.isTop?'顶层':'iframe 内')):'未找到')+'，提交按钮='+(sub&&sub.submit?(sub.submit.tag+(sub.submit.text?('「'+sub.submit.text+'」'):'')+' @'+(sub.isTop?'顶层':'iframe 内')):'未找到'), (sco||sub)?'i':'w');
+          } else brLog('已扫描 '+((ext&&ext.frames)?ext.frames.length:0)+' 个 frame，未发现分数框/提交按钮', 'w');
+          if(ext && ext.diag) brLog('帧诊断：'+String(ext.diag).slice(0,320), 'i');
+        }catch(e){ brLog('iframe 内识别异常: '+e.message, 'w'); }
+      }
       let okAny = false;
       if(res.scoreInFrame){
         // iframe 内分数框：顶层选择器无效，只存顶层窗口坐标，填分时走 CDP 键盘输入

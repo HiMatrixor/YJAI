@@ -216,6 +216,55 @@ ipcMain.handle('browser:relay', (e, msg) => {
 // 在该 target 的 Input domain 用局部坐标派发 mouseMoved/Pressed/Released（自动生成 pointer+mouse+click）。
 function sleepMs(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+/* ============ OOPIF（跨域 iframe）CDP 会话发现 ============ */
+// v1.9.14：17阅卷 / oemimoms 把整块打分板放进跨域 iframe。顶层 CDP Input 派发只会落在
+// iframe 外壳上（日志「命中 FRAME」），分数填不进、提交点不动。必须 attach 到 iframe
+// 自己的 session，在里面定位元素、派发输入/点击。
+// 之前 Target.getTargets 总找不到 target：默认只发现 page 级 target，OOPIF 需要先开启
+// Target.setDiscoverTargets（Puppeteer 靠 setAutoAttach 做同一件事）。
+async function collectIframeSessions(wc, srcHint) {
+  const diag = [];
+  const sessions = [];
+  let targetInfos = [];
+  try {
+    // 每次都开：handler 结束会 detach debugger，重连后 discover 开关会失效（幂等，重复调用无害）
+    try { await wc.debugger.sendCommand('Target.setDiscoverTargets', { discover: true }); diag.push('discover=on'); }
+    catch (e2) { diag.push('discover=ERR:' + String(e2 && e2.message || e2).slice(0, 50)); }
+    try { await wc.debugger.sendCommand('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }); diag.push('autoattach=on'); }
+    catch (e2) { diag.push('autoattach=ERR:' + String(e2 && e2.message || e2).slice(0, 50)); }
+    await sleepMs(220);
+    const r = await wc.debugger.sendCommand('Target.getTargets');
+    targetInfos = (r && r.targetInfos) || [];
+  } catch (e2) { diag.push('getTargets=ERR:' + String(e2 && e2.message || e2).slice(0, 60)); }
+  diag.push('targets=' + targetInfos.length + '[' + targetInfos.slice(0, 8).map(t => (t.type || '?') + ':' + String(t.url || '').split('?')[0].slice(-38)).join(' ') + ']');
+  let origin = ''; try { origin = new URL(String(srcHint || '')).origin; } catch (_) {}
+  const path = String(srcHint || '').split('#')[0].split('?')[0];
+  const rank = (t) => {
+    const u = String(t.url || '');
+    if (path && u.split('#')[0].split('?')[0] === path) return 5;
+    if (path && u.indexOf(path) >= 0) return 4;
+    try { if (origin && new URL(u).origin === origin) return 3; } catch (_) {}
+    return t.type === 'iframe' ? 2 : 1;
+  };
+  const cands = targetInfos.filter(t => t.url && t.url !== 'about:blank' && (t.type === 'iframe' || t.type === 'page'));
+  cands.sort((a, b) => rank(b) - rank(a));
+  for (const t of cands.slice(0, 10)) {
+    let sid = null;
+    try {
+      const at = await wc.debugger.sendCommand('Target.attachToTarget', { targetId: t.targetId, flatten: true });
+      sid = at && at.sessionId;
+    } catch (_) { continue; }
+    if (sid) sessions.push({ sessionId: sid, targetId: t.targetId, url: String(t.url || ''), type: t.type, rank: rank(t) });
+  }
+  diag.push('sessions=' + sessions.length);
+  return { sessions, diag: diag.join(' ') };
+}
+function releaseIframeSessions(wc, sessions) {
+  for (const s of sessions || []) {
+    try { const p = wc.debugger.sendCommand('Target.detachFromTarget', { sessionId: s.sessionId }); if (p && p.catch) p.catch(() => {}); } catch (_) {}
+  }
+}
+
 ipcMain.handle('browser:cdp-click', async (e, payload) => {
   const { webContentsId, x, y, times } = payload || {};
   // 渲染端不再传 webContentsId（webview.getWebContentsId() 走 GUEST_VIEW_MANAGER_CALL，
@@ -258,59 +307,65 @@ ipcMain.handle('browser:cdp-click', async (e, payload) => {
       })()`
     });
     const info = (probe && probe.result && probe.result.value) || {};
-    let tx = x, ty = y, sessionId = undefined, targetDesc = 'top';
+    let targetDesc = 'top', inFrameDone = false, mode = 'cdp-top', diag = '';
 
     if (info.cross) {
-      // 2) 跨域 iframe：诊断——attach iframe target 读取局部坐标处的元素（只读，用于日志）
-      //    注意：实际点击仍在顶层 target 派发（与 Puppeteer 一致），由浏览器合成器路由进 OOPIF，
-      //    直接对 OOPIF target 派发 Input 事件会被静默丢弃（这正是"日志成功但平台无反应"的原因）
-      tx = x; ty = y; // 顶层坐标派发
-      targetDesc = 'iframe:' + String(info.src||'').slice(0, 80);
-      try {
-        const { targetInfos } = await wc.debugger.sendCommand('Target.getTargets');
-        const srcBase = String(info.src || '').split('#')[0];
-        const srcPath = srcBase.split('?')[0];
-        const cands = (targetInfos || []).filter(t => t.type === 'iframe' && t.attached !== true);
-        let best = null;
-        for (const t of cands) {
-          const u = String(t.url || '');
-          if (srcBase && (u === srcBase || u.startsWith(srcBase))) { best = t; break; }
-          if (srcPath && u.split('?')[0] === srcPath) { best = t; break; }
-        }
-        if (!best && cands.length) {
-          try {
-            const so = new URL(srcBase).origin;
-            best = cands.find(t => { try { return new URL(t.url).origin === so; } catch (_) { return false; } });
-          } catch (_) {}
-        }
-        if (best) {
-          const at = await wc.debugger.sendCommand('Target.attachToTarget', { targetId: best.targetId, flatten: true });
-          const sid = at.sessionId;
-          try {
-            const p2 = await wc.debugger.sendCommand('Runtime.evaluate', {
-              returnByValue: true,
-              expression: `(function(){ var el=document.elementFromPoint(${info.ix},${info.iy}); if(!el) return 'NONE'; return el.tagName+(el.id?'#'+el.id:'')+(el.className&&typeof el.className==='string'?'.'+String(el.className).trim().split(/\\s+/).slice(0,2).join('.'):''); })()`
-            }, sid);
-            iframeHit = (p2 && p2.result && p2.result.value) || 'UNKNOWN';
-          } catch (_) {}
-          try { await wc.debugger.sendCommand('Target.detachFromTarget', { sessionId: sid }); } catch (_) {}
-        }
-      } catch (_) {}
+      // 2) 跨域 iframe：v1.9.14 关键修复。顶层派发只落在 iframe 外壳（日志「命中 FRAME」），
+      //    平台毫无反应。改为 attach 到 iframe 自己的 CDP session，用【iframe 内局部坐标】
+      //    在该 session 的 Input domain 派发点击（Puppeteer 的 frame.click 就是这个做法）。
+      targetDesc = 'iframe:' + String(info.src || '').slice(0, 80);
+      const col = await collectIframeSessions(wc, info.src);
+      diag = col.diag;
+      for (const s of col.sessions) {
+        let hitEl = '';
+        try {
+          const p2 = await wc.debugger.sendCommand('Runtime.evaluate', {
+            returnByValue: true,
+            expression: `(function(){
+              function tagOf(e){ return e.tagName+(e.id?'#'+e.id:'')+(e.className&&typeof e.className==='string'?'.'+String(e.className).trim().split(/\\s+/).slice(0,2).join('.'):''); }
+              var el = document.elementFromPoint(${info.ix}, ${info.iy});
+              if(!el) return JSON.stringify({r:'NONE'});
+              return JSON.stringify({r:'OK', hit:tagOf(el), text:String(el.textContent||'').replace(/\\s+/g,'').slice(0,20), url:location.href});
+            })()`
+          }, s.sessionId);
+          let o = {}; try { o = JSON.parse((p2 && p2.result && p2.result.value) || '{}'); } catch (_) {}
+          if (o.r !== 'OK') continue;
+          // 确认这个 session 就是目标 iframe（避免点进别的 frame）
+          let same = false;
+          try { same = new URL(o.url).origin === new URL(String(info.src || '')).origin; } catch (_) { same = true; }
+          if (!same && s.rank < 3) continue;
+          hitEl = o.hit + (o.text ? '(' + o.text + ')' : '');
+        } catch (_) { continue; }
+        // 在该 iframe session 内派发完整点击序列（局部坐标）
+        try {
+          for (let i = 0; i < n; i++) {
+            await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: info.ix, y: info.iy }, s.sessionId);
+            await sleepMs(25);
+            await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: info.ix, y: info.iy, button: 'left', clickCount: 1, buttons: 1 }, s.sessionId);
+            await sleepMs(45);
+            await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: info.ix, y: info.iy, button: 'left', clickCount: 1, buttons: 0 }, s.sessionId);
+            await sleepMs(135);
+          }
+          iframeHit = hitEl; inFrameDone = true; mode = 'iframe-session';
+          break;
+        } catch (_) {}
+      }
+      releaseIframeSessions(wc, col.sessions);
     }
 
-    // 3) 在顶层 target 派发完整点击序列（原始窗口坐标，由浏览器路由进 iframe）
-    for (let i = 0; i < n; i++) {
-      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: tx, y: ty });
-      await sleepMs(25);
-      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: tx, y: ty, button: 'left', clickCount: 1, buttons: 1 });
-      await sleepMs(45);
-      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: tx, y: ty, button: 'left', clickCount: 1, buttons: 0 });
-      await sleepMs(135);
+    // 3) 没拿到可用 iframe session（或不在 iframe 内）才退回顶层派发
+    if (!inFrameDone) {
+      for (let i = 0; i < n; i++) {
+        await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+        await sleepMs(25);
+        await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1, buttons: 1 });
+        await sleepMs(45);
+        await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1, buttons: 0 });
+        await sleepMs(135);
+      }
     }
-    if (sessionId) {
-      try { await wc.debugger.sendCommand('Target.detachFromTarget', { sessionId }); } catch (_) {}
-    }
-    return { ok: true, clicked: n, target: targetDesc, iframeHit: iframeHit, local: info.cross ? { x: info.ix, y: info.iy } : null };
+    const warn = (info.cross && !inFrameDone) ? '未找到可用的 iframe 会话，点击只在顶层派发（可能落在 iframe 外壳上）' : '';
+    return { ok: true, clicked: n, target: targetDesc, iframeHit: iframeHit, mode, verified: inFrameDone || !info.cross, warn, diag, local: info.cross ? { x: info.ix, y: info.iy } : null };
   } catch (err) {
     return { error: String(err && err.message || err) };
   } finally {
@@ -587,151 +642,334 @@ ipcMain.handle('browser:cdp-fill-top', async (e, payload) => {
 // 正确做法（与 Puppeteer 一致）：在【顶层 target】用原始窗口坐标派发
 //   mousePressed/Released → Ctrl+A → Input.insertText，
 // 浏览器合成器会把鼠标与键盘事件自动路由进 iframe（含 OOPIF），Vue/React 受控输入同样响应。
+/* ============ iframe 内分数框（v1.9.15：帧树 + 隔离世界） ============ */
+// v1.9.14 走的是「attach iframe session」，但 17阅卷的 iframe 与顶层同站不同源（oss 与 web
+// 子域），同一渲染进程 → 没有 iframe target，线上诊断 targets=3 里一个 iframe 都没有，
+// sessions 只能 attach 到 page，整条路从第一步就走不通。现在改成：getFrameTree 找到帧 →
+// createIsolatedWorld 进帧执行 → 语义定位输入框 → focus 后顶层键入 → 回读验证。
+// 全程不依赖拾取坐标（换题/改版后坐标必失效）。
 ipcMain.handle('browser:cdp-fill-iframe', async (e, payload) => {
   const { x, y, value } = payload || {};
+  const val = String(value == null ? '' : value);
   const guests = webContents.getAllWebContents().filter(w => !w.isDestroyed() && w.getType() === 'webview');
   const wc = guests.find(w => { try { const u = w.getURL(); return u && !/^about:blank/.test(u); } catch (_) { return false; } }) || guests[0] || null;
   if (!wc || wc.isDestroyed()) return { error: '未找到浏览器页面（webview）' };
-  if (x == null || y == null) return { error: '缺少输入框坐标' };
-  const val = String(value);
   if (!val) return { error: '缺少要填入的值' };
-  const rbx = x, rby = y;
   let attached = false;
   try {
     if (!wc.debugger.isAttached()) { wc.debugger.attach('1.3'); attached = true; }
     try { await wc.debugger.sendCommand('Page.bringToFront'); } catch (_) {}
 
-    // 1) 顶层探针：沿 iframe 递归（同源可穿透），拿到 iframe src / 局部坐标 / 输入框标签
-    const probe = await wc.debugger.sendCommand('Runtime.evaluate', {
-      returnByValue: true,
-      expression: `(function(){
-        function walk(doc, cx, cy, depth){
-          var el = doc.elementFromPoint(cx, cy);
-          if(!el) return {r:'NONE'};
-          if((el.tagName==='IFRAME'||el.tagName==='FRAME') && depth<8){
-            var r = el.getBoundingClientRect();
-            var nx = cx - r.left, ny = cy - r.top;
-            var idoc = null; try{ idoc = el.contentDocument; }catch(err){}
-            if(idoc && el.contentWindow){
-              var inner = walk(idoc, nx, ny, depth+1);
-              if(inner && inner.r==='OK'){
-                return {r:'OK', hit:inner.hit, inFrame:true, sameOrigin:true, src:el.src||'', ix:Math.round(nx), iy:Math.round(ny)};
-              }
-            }
-            return {r:'CROSS', cross:true, src:el.src||'', ix:Math.round(nx), iy:Math.round(ny)};
+    const frames = await listFrames(wc);
+    const diag = 'frames=' + frames.length + '[' + frames.slice(0, 6).map(f => f.depth + ':' + shortUrl(f.url)).join(' ') + ']';
+
+    // 1) 逐帧语义定位（子帧优先，顶层兜底）。不依赖拾取坐标：换题/改版/缩放后坐标早就失效了。
+    let hitFrame = null, hitCtx = null, hitInfo = null, worldFail = 0;
+    const ordered = frames.filter(f => f.depth > 0).concat(frames.filter(f => f.depth === 0));
+    for (const f of ordered) {
+      let ctx = null;
+      try { ctx = await openFrameWorld(wc, f.id, 'yjai_fill_' + f.depth); } catch (_) { ctx = null; }
+      if (!ctx) { worldFail++; continue; }
+      let info = null;
+      try { info = JSON.parse(String((await evalCtx(wc, ctx, scoreFindExpr(x, y))) || '')); } catch (_) { info = null; }
+      if (!info || info.r !== 'OK') continue;
+      const better = !hitInfo
+        || (hitInfo.isTop && !info.isTop)
+        || (hitInfo.isTop === info.isTop && hitInfo.how !== 'class' && info.how === 'class');
+      if (better) { hitFrame = f; hitCtx = ctx; hitInfo = info; }
+      if (!info.isTop && info.how === 'class') break;
+    }
+
+    // 2) 一个输入框都没有：键盘给分型平台（或结构完全没识别到），按坐标敲数字
+    if (!hitInfo) {
+      if (x != null && y != null) {
+        try {
+          await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x, y: y });
+          await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: x, y: y, button: 'left', clickCount: 1, buttons: 1 });
+          await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x, y: y, button: 'left', clickCount: 1, buttons: 0 });
+          await sleepMs(160);
+          for (const ch of val) {
+            const vk = ch.charCodeAt(0);
+            await wc.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, text: ch, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
+            await wc.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: ch, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
+            await sleepMs(40);
           }
-          if(el.tagName!=='INPUT' && el.tagName!=='TEXTAREA'){
-            var i = el.querySelector('input, textarea');
-            if(i) el = i; else return {r:'NOT_INPUT', hit:el.tagName};
-          }
-          return {r:'OK', hit:el.tagName+(el.id?'#'+el.id:''), inFrame:depth>0, sameOrigin:true, src:'', ix:Math.round(cx), iy:Math.round(cy)};
-        }
-        return walk(document, ${x}, ${y}, 0);
-      })()`
-    });
-    const info = (probe && probe.result && probe.result.value) || {};
-    const rbx2 = (info.ix != null ? info.ix : rbx);
-    const rby2 = (info.iy != null ? info.iy : rby);
+          return { ok: true, verified: false, mode: 'keyboard-coord', hit: '给分点坐标', warn: '页面内没有可填写的输入框，已按「键盘给分」在坐标处派发数字键，请在浏览器窗口确认', diag: diag };
+        } catch (_) {}
+      }
+      return { ok: false, error: '页面内未找到分数输入框（已扫描 ' + frames.length + ' 个 frame，' + worldFail + ' 个无法建立上下文），请确认阅卷页面已打开且题目处于可评分状态', diag: diag };
+    }
 
-    // 2) 顶层派发真实鼠标点击（原始窗口坐标，浏览器自动路由进 iframe）
-    await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
-    await sleepMs(30);
-    await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1, buttons: 1 });
-    await sleepMs(40);
-    await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1, buttons: 0 });
-    await sleepMs(160);
-
-    // 3) Ctrl+A 全选 → Input.insertText（受信任输入，覆盖旧值）
-    const keyA = { modifiers: 2, key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65 };
-    await wc.debugger.sendCommand('Input.dispatchKeyEvent', Object.assign({ type: 'keyDown' }, keyA));
-    await wc.debugger.sendCommand('Input.dispatchKeyEvent', Object.assign({ type: 'keyUp' }, keyA));
-    await sleepMs(60);
-    await wc.debugger.sendCommand('Input.insertText', { text: val });
-    await sleepMs(200);
-
-    // 4) 回读验证：同源 iframe 可直接递归读；跨域用 CDP target 只读（放宽匹配）
-    let verified = false, warn = '', hit = info.hit || '';
+    // 3) 聚焦 + 清空 → 顶层派发受信任文本输入（键盘按焦点投递，同进程子帧能收到）
+    const ctx = hitCtx;
+    let verified = false, mode = '', note = '';
     try {
-      const rr = await wc.debugger.sendCommand('Runtime.evaluate', {
-        returnByValue: true,
-        expression: `(function(){
-          function walk(doc, cx, cy, depth){
-            var el = doc.elementFromPoint(cx, cy); if(!el) return null;
-            if((el.tagName==='IFRAME'||el.tagName==='FRAME') && depth<8){
-              var r=el.getBoundingClientRect(), idoc=null;
-              try{ idoc=el.contentDocument; }catch(err){}
-              if(idoc) return walk(idoc, cx-r.left, cy-r.top, depth+1);
-              return null;
-            }
-            if(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){ var i=el.querySelector('input,textarea'); if(i) el=i; else return null; }
-            return el;
-          }
-          var el = walk(document, ${x}, ${y}, 0);
-          if(!el) return '';
-          return JSON.stringify({v:el.value, tag:el.tagName+(el.id?'#'+el.id:'')});
-        })()`
-      });
-      let o = {}; try { o = JSON.parse((rr && rr.result && rr.result.value) || '{}'); } catch (_) {}
-      if (String(o.v) === val) { verified = true; hit = o.tag || hit; }
-    } catch (_) {}
+      const focused = await evalCtx(wc, ctx, `(function(){
+        var el=window.__yjaiEl; if(!el) return 'NO_EL';
+        try{ el.scrollIntoView({block:'center'}); }catch(e){}
+        try{ el.focus(); }catch(e){}
+        try{ el.select && el.select(); }catch(e){}
+        var proto=(el.tagName==='TEXTAREA')?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
+        var setter=Object.getOwnPropertyDescriptor(proto,'value').set;
+        if(setter) setter.call(el,''); else el.value='';
+        try{ el.dispatchEvent(new Event('input',{bubbles:true})); }catch(e){}
+        return (document.activeElement===el) ? 'FOCUSED' : ('NOT_FOCUSED:'+String(document.activeElement&&document.activeElement.tagName));
+      })()`);
+      await wc.debugger.sendCommand('Input.insertText', { text: val });
+      await sleepMs(170);
+      const v1 = await evalCtx(wc, ctx, `(function(){ var el=window.__yjaiEl; return el?String(el.value==null?'':el.value):''; })()`);
+      if (String(v1 == null ? '' : v1) === val) { verified = true; mode = 'frame-keyboard'; }
+      else if (focused !== 'FOCUSED') { note = 'iframe 内输入框未获得焦点（' + String(focused) + '）'; }
+    } catch (e2) { note = 'iframe 内键盘输入异常: ' + String(e2 && e2.message || e2).slice(0, 80); }
 
-    // 4b) 跨域：遍历 CDP target 只读回读（不再要求 url 精确匹配 / attached===false）
+    // 4) 键盘没吃下（受控组件拦截 / 输入法）：逐字符再敲一遍
     if (!verified) {
       try {
-        const { targetInfos } = await wc.debugger.sendCommand('Target.getTargets');
-        const srcBase = String(info.src || '').split('#')[0];
-        const srcPath = srcBase.split('?')[0];
-        let origin = ''; try { origin = new URL(srcBase).origin; } catch (_) {}
-        const rank = (t) => {
-          const u = String(t.url || '');
-          if (srcBase && (u === srcBase || u.startsWith(srcBase))) return 5;
-          if (srcPath && u.split('?')[0] === srcPath) return 4;
-          try { if (origin && new URL(u).origin === origin) return 3; } catch (_) {}
-          return t.type === 'iframe' ? 2 : 1;
-        };
-        const all = (targetInfos || []).filter(t => (t.type === 'iframe' || t.type === 'page') && t.url && t.url !== 'about:blank');
-        all.sort((a, b) => rank(b) - rank(a));
-        for (const t of all.slice(0, 8)) {
-          let sid = null;
-          try {
-            const at = await wc.debugger.sendCommand('Target.attachToTarget', { targetId: t.targetId, flatten: true });
-            sid = at.sessionId;
-            const rr = await wc.debugger.sendCommand('Runtime.evaluate', {
-              returnByValue: true,
-              expression: `(function(){ var ae=document.activeElement, el=ae; if(!el) return ''; if(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){ el=document.elementFromPoint(${rbx2},${rby2}); if(el&&el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){ var i=el.querySelector('input,textarea'); if(i) el=i; } } if(!el||(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA')) return ''; return JSON.stringify({v:el.value, tag:el.tagName+(el.id?'#'+el.id:'')}); })()`
-            }, sid);
-            let o = {}; try { o = JSON.parse((rr && rr.result && rr.result.value) || '{}'); } catch (_) {}
-            if (String(o.v) === val) { verified = true; hit = o.tag || hit; }
-          } catch (_) {}
-          finally { if (sid) { try { await wc.debugger.sendCommand('Target.detachFromTarget', { sessionId: sid }); } catch (_) {} } }
-          if (verified) break;
-        }
-      } catch (_) {}
-    }
-
-    // 4c) 回读不到（跨域且无可用 target）：改用逐字符完整键盘链再输一遍；
-    //     顶层 CDP 输入已派发，不因「读不到」而中断阅卷，只给 warn 提示人工确认。
-    if (!verified) {
-      try {
-        await wc.debugger.sendCommand('Input.dispatchKeyEvent', Object.assign({ type: 'keyDown' }, keyA));
-        await wc.debugger.sendCommand('Input.dispatchKeyEvent', Object.assign({ type: 'keyUp' }, keyA));
-        await wc.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46, nativeVirtualKeyCode: 46 });
-        await wc.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46, nativeVirtualKeyCode: 46 });
-        await sleepMs(60);
+        await evalCtx(wc, ctx, `(function(){ var el=window.__yjaiEl; if(!el) return ''; try{ el.focus(); }catch(e){} return 'OK'; })()`);
         for (const ch of val) {
-          await wc.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, text: ch, windowsVirtualKeyCode: 0, nativeVirtualKeyCode: 0 });
-          await wc.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: ch, windowsVirtualKeyCode: 0, nativeVirtualKeyCode: 0 });
-          await sleepMs(30);
+          const vk = ch.charCodeAt(0);
+          await wc.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, text: ch, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
+          await wc.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: ch, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
+          await sleepMs(45);
         }
-        await sleepMs(120);
+        await sleepMs(130);
+        const v2 = await evalCtx(wc, ctx, `(function(){ var el=window.__yjaiEl; return el?String(el.value==null?'':el.value):''; })()`);
+        if (String(v2 == null ? '' : v2) === val) { verified = true; mode = 'frame-keyboard-chars'; }
       } catch (_) {}
-      warn = '无法回读 iframe 内输入框的值（已派发顶层键盘输入 + 逐字符键盘链，请在浏览器窗口确认）';
     }
-    return { ok: true, hit: hit || 'iframe 内输入框', verified, mode: 'cdp-keyboard-top', inFrame: !!info.inFrame || !!info.cross, warn };
+
+    // 5) 仍不行：原生 setter + input/change 显式通知 Vue（受控组件最后一条路）
+    if (!verified) {
+      try {
+        const v3 = await evalCtx(wc, ctx, `(function(){
+          var el=window.__yjaiEl, v=${JSON.stringify(val)}; if(!el) return '';
+          var proto=(el.tagName==='TEXTAREA')?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
+          var setter=Object.getOwnPropertyDescriptor(proto,'value').set;
+          if(setter) setter.call(el,v); else el.value=v;
+          try{ el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:v})); }
+          catch(e){ try{ el.dispatchEvent(new Event('input',{bubbles:true})); }catch(e2){} }
+          try{ el.dispatchEvent(new Event('change',{bubbles:true})); }catch(e){}
+          return String(el.value==null?'':el.value);
+        })()`);
+        if (String(v3 == null ? '' : v3) === val) { verified = true; mode = 'frame-dom-setter'; }
+      } catch (_) {}
+    }
+
+    const hitTx = (hitInfo.hit || '分数输入框') + (hitFrame && hitFrame.depth > 0 ? (' @iframe(' + shortUrl(hitFrame.url) + ')') : ' @top');
+    if (!verified) {
+      return { ok: false, error: '分数输入框已定位（' + hitTx + '）但输入未生效', hit: hitTx, mode: mode || 'none', note: note, diag: diag };
+    }
+    return { ok: true, verified: true, mode: mode, hit: hitTx, note: note, diag: diag };
   } catch (err) {
     return { error: String(err && err.message || err) };
   } finally {
     if (attached) { try { wc.debugger.detach(); } catch (e2) { /* ignore */ } }
+  }
+});
+/* ============ 自动识别：穿透 iframe（v1.9.15 帧树版） ============ */
+// 顶层 querySelector / contentDocument 对跨源 iframe 一律为空，所以 17阅卷点「自动识别元素」
+// 会报「分数输入框=未找到，提交按钮=未找到」。这里逐帧用隔离世界执行识别脚本，
+// 再把帧内局部坐标 + 顶层 iframe 偏移换算成窗口坐标交回渲染层。
+ipcMain.handle('browser:cdp-detect-iframes', async () => {
+  const guests = webContents.getAllWebContents().filter(w => !w.isDestroyed() && w.getType() === 'webview');
+  const wc = guests.find(w => { try { const u = w.getURL(); return u && !/^about:blank/.test(u); } catch (_) { return false; } }) || guests[0] || null;
+  if (!wc || wc.isDestroyed()) return { error: '未找到浏览器页面（webview）' };
+  let attached = false;
+  try {
+    if (!wc.debugger.isAttached()) { wc.debugger.attach('1.3'); attached = true; }
+    const frames = await listFrames(wc);
+    const diag = 'frames=' + frames.length + '[' + frames.slice(0, 6).map(f => f.depth + ':' + shortUrl(f.url)).join(' ') + ']';
+    const results = [];
+    for (const f of frames) {
+      let ctx = null;
+      try { ctx = await openFrameWorld(wc, f.id, 'yjai_det_' + f.depth); } catch (_) { continue; }
+      if (!ctx) continue;
+      let d = null;
+      try { d = JSON.parse(String((await evalCtx(wc, ctx, detectFrameExpr())) || '')); } catch (_) { d = null; }
+      if (!d || !d.url) continue;
+      if (!d.score && !d.submit) continue;
+      results.push({ url: d.url, depth: f.depth, isTop: !!d.isTop, score: d.score, submit: d.submit, off: { x: 0, y: 0 } });
+    }
+    // 顶层直接子 iframe 的窗口偏移（一级足够；嵌套子帧由 depth 排序，坐标只用于日志与兜底）
+    let topFrames = [];
+    try {
+      const topCtx = frames.length ? await openFrameWorld(wc, frames[0].id, 'yjai_top') : null;
+      const raw = topCtx ? await evalCtx(wc, topCtx, `(function(){
+        var a=[], fs=document.querySelectorAll('iframe,frame');
+        for(var i=0;i<fs.length;i++){ var r=fs[i].getBoundingClientRect(); a.push({left:Math.round(r.left),top:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height),src:fs[i].src||''}); }
+        return JSON.stringify(a);
+      })()`) : '[]';
+      topFrames = JSON.parse(String(raw || '[]'));
+    } catch (_) { topFrames = []; }
+    const keyOf = (s) => { try { const u = new URL(s); return u.origin + u.pathname; } catch (_) { return String(s || '').split('#')[0].split('?')[0]; } };
+    for (const it of results) {
+      if (it.isTop) { it.off = { x: 0, y: 0 }; continue; }
+      let f = topFrames.find(t => keyOf(t.src) === keyOf(it.url));
+      if (!f) f = topFrames.find(t => { try { return new URL(t.src).origin === new URL(it.url).origin; } catch (_) { return false; } });
+      if (!f && topFrames.length === 1) f = topFrames[0];
+      it.off = f ? { x: f.left, y: f.top } : { x: 0, y: 0 };
+    }
+    return { ok: true, frames: frames.map(f => ({ depth: f.depth, url: f.url })), results: results, diag: diag, top: frames[0] ? frames[0].url : '' };
+  } catch (err) {
+    return { error: String(err && err.message || err) };
+  } finally {
+    if (attached) { try { wc.debugger.detach(); } catch (_) {} }
+  }
+});
+/* ============ 帧树内操作（v1.9.15） ============ */
+// 17阅卷的 webview 顶层是 oss.17yuejuan.cn，打分板 iframe 是 web.17yuejuan.cn —— 同站不同源，
+// 同一渲染进程，Target.getTargets 里根本没有 iframe target（线上诊断只有 page/page/webview），
+// v1.9.14 的「attach iframe session」在这类平台上永远抓不到；顶层 Input 又依赖早已失效的坐标。
+// 可靠路径：Page.getFrameTree 拿全部 frame（含跨域子帧）→ Page.createIsolatedWorld 在该帧
+// 建隔离世界执行 JS（CDP 不受同源策略限制）→ 语义定位元素 → el.focus() 后由顶层
+// Input.insertText 键入（键盘按焦点投递，同进程子帧能收到）→ 回该帧回读 el.value 验证。
+async function listFrames(wc) {
+  const frames = [];
+  try { await wc.debugger.sendCommand('Page.enable'); } catch (_) {}
+  let tree = null;
+  try { const r = await wc.debugger.sendCommand('Page.getFrameTree'); tree = r && r.frameTree; } catch (_) {}
+  const walk = (node, depth, parentId) => {
+    if (!node || !node.frame) return;
+    const f = node.frame;
+    frames.push({ id: f.id, parentId: parentId || null, url: String(f.url || ''), name: f.name || '', origin: f.securityOrigin || '', depth: depth });
+    (node.childFrames || []).forEach(c => walk(c, depth + 1, f.id));
+  };
+  walk(tree, 0, null);
+  return frames;
+}
+async function openFrameWorld(wc, frameId, worldName) {
+  const r = await wc.debugger.sendCommand('Page.createIsolatedWorld', { frameId: frameId, worldName: worldName || 'yjai_world', grantUniveralAccess: true });
+  return (r && r.executionContextId) || null;
+}
+async function evalCtx(wc, ctxId, expression) {
+  const r = await wc.debugger.sendCommand('Runtime.evaluate', { contextId: ctxId, returnByValue: true, expression: expression });
+  if (r && r.exceptionDetails) return undefined;
+  return r && r.result ? r.result.value : undefined;
+}
+function shortUrl(u) {
+  const s = String(u || '').split('#')[0].split('?')[0].replace(/^https?:\/\//, '');
+  if (!s) return 'about:blank';
+  return s.length > 46 ? (s.slice(0, 46) + '…') : s;
+}
+function scoreFindExpr(hintX, hintY) {
+  const hx = (typeof hintX === 'number' && isFinite(hintX)) ? Math.round(hintX) : -1;
+  const hy = (typeof hintY === 'number' && isFinite(hintY)) ? Math.round(hintY) : -1;
+  return `(function(){
+    function vis(e){ if(!e) return false; var r=e.getBoundingClientRect(); return r.width>4 && r.height>4; }
+    function tagOf(e){ var c=(e.className&&typeof e.className==='string')?e.className:''; return e.tagName+(e.id?'#'+e.id:'')+(c?'.'+String(c).trim().split(/\\s+/).slice(0,2).join('.'):''); }
+    function asInput(e){ if(!e) return null; if(e.tagName==='INPUT'||e.tagName==='TEXTAREA') return e; if(e.querySelector){ var q=e.querySelector('input,textarea'); if(q) return q; } return null; }
+    var best=null, how='', hx=${hx}, hy=${hy};
+    if(hx>=0 && hy>=0){ var he=null; try{ he=asInput(document.elementFromPoint(hx,hy)); }catch(err){} if(he && vis(he) && !he.disabled && !he.readOnly){ best=he; how='point'; } }
+    if(!best){
+      var ins=document.querySelectorAll('input,textarea'), fill=[];
+      for(var i=0;i<ins.length;i++){
+        var el=ins[i]; if(!vis(el)||el.disabled||el.readOnly) continue;
+        var t=String(el.type||'text').toLowerCase();
+        if(el.tagName!=='TEXTAREA' && t!=='text' && t!=='number' && t!=='tel') continue;
+        var cl=String(el.className||'')+' '+String((el.getAttribute&&el.getAttribute('placeholder'))||'');
+        if(/scale|zoom|percent|[%％]/i.test(cl)) continue;
+        if(/score|fenshu|mark|得分|分数|分值/i.test(cl)){ best=el; how='class'; break; }
+        fill.push(el);
+      }
+      if(!best && fill.length){ best=fill[0]; how='first'; }
+    }
+    window.__yjaiEl = best;
+    if(!best) return JSON.stringify({r:'NO_INPUT', inputs:document.querySelectorAll('input,textarea').length, url:location.href, isTop:(window.top===window.self)});
+    var rb=best.getBoundingClientRect();
+    return JSON.stringify({r:'OK', hit:tagOf(best), how:how, x:Math.round(rb.left+rb.width/2), y:Math.round(rb.top+rb.height/2), value:String(best.value==null?'':best.value), url:location.href, isTop:(window.top===window.self), inputs:document.querySelectorAll('input,textarea').length});
+  })()`;
+}
+function submitFindExpr() {
+  return `(function(){
+    function vis(e){ if(!e) return false; var r=e.getBoundingClientRect(); if(r.width<8||r.height<8) return false; var s=null; try{ s=getComputedStyle(e); }catch(err){} return !s || (s.visibility!=='hidden' && s.display!=='none'); }
+    function tagOf(e){ var c=(e.className&&typeof e.className==='string')?e.className:''; return e.tagName+(e.id?'#'+e.id:'')+(c?'.'+String(c).trim().split(/\\s+/).slice(0,2).join('.'):''); }
+    function depth(e){ var d=0,p=e; while(p&&p.parentElement){ d++; p=p.parentElement; } return d; }
+    function isSub(tx){ return tx==='提交'||/^(提交分数|提交评阅|确认提交|提交答卷|提交并继续|提交本题|评阅完成|提交并下一题|保存并提交)$/.test(tx); }
+    var list=document.querySelectorAll('button,span,a,li,div'), best=null;
+    for(var i=0;i<list.length;i++){
+      var e=list[i], tx=String(e.textContent||'').replace(/\\s+/g,'');
+      if(!isSub(tx)||!vis(e)) continue;
+      if(!best || depth(e)>depth(best)) best=e;
+    }
+    window.__yjaiSub = best;
+    if(!best) return JSON.stringify({r:'NO_SUBMIT', url:location.href, isTop:(window.top===window.self)});
+    var rb=best.getBoundingClientRect();
+    return JSON.stringify({r:'OK', hit:tagOf(best), text:String(best.textContent||'').replace(/\\s+/g,'').slice(0,14), x:Math.round(rb.left+rb.width/2), y:Math.round(rb.top+rb.height/2), url:location.href, isTop:(window.top===window.self)});
+  })()`;
+}
+function detectFrameExpr() {
+  return `(function(){
+    function vis(e){ if(!e) return false; var r=e.getBoundingClientRect(); if(r.width<6||r.height<6) return false; var s=null; try{ s=getComputedStyle(e); }catch(err){} return !s || (s.visibility!=='hidden' && s.display!=='none'); }
+    function tagOf(e){ var c=(e.className&&typeof e.className==='string')?e.className:''; return e.tagName+(e.id?'#'+e.id:'')+(c?'.'+String(c).trim().split(/\\s+/).slice(0,2).join('.'):''); }
+    function ctr(e){ var r=e.getBoundingClientRect(); return {x:Math.round(r.left+r.width/2), y:Math.round(r.top+r.height/2)}; }
+    function depth(e){ var d=0,p=e; while(p&&p.parentElement){ d++; p=p.parentElement; } return d; }
+    function isSub(tx){ return tx==='提交'||/^(提交分数|提交评阅|确认提交|提交答卷|提交并继续|提交本题|评阅完成|提交并下一题|保存并提交)$/.test(tx); }
+    var score=null, fill=[], ins=document.querySelectorAll('input,textarea');
+    for(var i=0;i<ins.length;i++){
+      var el=ins[i]; if(!vis(el)||el.disabled||el.readOnly) continue;
+      var t=String(el.type||'text').toLowerCase();
+      if(el.tagName!=='TEXTAREA' && t!=='text' && t!=='number' && t!=='tel') continue;
+      var cl=String(el.className||'')+' '+String((el.getAttribute&&el.getAttribute('placeholder'))||'');
+      if(/scale|zoom|percent|[%％]/i.test(cl)) continue;
+      if(/score|fenshu|mark|得分|分数|分值/i.test(cl)){ score=el; break; }
+      fill.push(el);
+    }
+    if(!score && fill.length) score=fill[0];
+    var sub=null, list=document.querySelectorAll('button,span,a,li,div');
+    for(var k=0;k<list.length;k++){
+      var e2=list[k], tx=String(e2.textContent||'').replace(/\\s+/g,'');
+      if(!isSub(tx)||!vis(e2)) continue;
+      if(!sub || depth(e2)>depth(sub)) sub=e2;
+    }
+    return JSON.stringify({r:'OK', url:location.href, isTop:(window.top===window.self),
+      score: score?Object.assign(ctr(score),{tag:tagOf(score)}):null,
+      submit: sub?Object.assign(ctr(sub),{tag:tagOf(sub),text:String(sub.textContent||'').replace(/\\s+/g,'').slice(0,14)}):null});
+  })()`;
+}
+
+/* ============ iframe 内提交按钮：语义定位 + DOM 点击（v1.9.15） ============ */
+// 提交按钮同样在 frame 里，且「提交分数 / 满分 / 零分」常共用 span.set-btn —— 按坐标点一旦
+// 偏了就会点成「满分」（v1.9.10 的事故）。这里按文字语义精确定位到元素本身再点，杜绝误点。
+ipcMain.handle('browser:cdp-submit', async () => {
+  const guests = webContents.getAllWebContents().filter(w => !w.isDestroyed() && w.getType() === 'webview');
+  const wc = guests.find(w => { try { const u = w.getURL(); return u && !/^about:blank/.test(u); } catch (_) { return false; } }) || guests[0] || null;
+  if (!wc || wc.isDestroyed()) return { error: '未找到浏览器页面（webview）' };
+  let attached = false;
+  try {
+    if (!wc.debugger.isAttached()) { wc.debugger.attach('1.3'); attached = true; }
+    try { await wc.debugger.sendCommand('Page.bringToFront'); } catch (_) {}
+    const frames = await listFrames(wc);
+    const diag = 'frames=' + frames.length + '[' + frames.map(f => f.depth + ':' + shortUrl(f.url)).join(' ') + ']';
+    const ordered = frames.filter(f => f.depth > 0).concat(frames.filter(f => f.depth === 0));
+    for (const f of ordered) {
+      let ctx = null;
+      try { ctx = await openFrameWorld(wc, f.id, 'yjai_sub_' + f.depth); } catch (_) { continue; }
+      if (!ctx) continue;
+      let info = null;
+      try { info = JSON.parse(String((await evalCtx(wc, ctx, submitFindExpr())) || '')); } catch (_) { info = null; }
+      if (!info || info.r !== 'OK') continue;
+      let dispatched = '';
+      try {
+        dispatched = String((await evalCtx(wc, ctx, `(function(){
+          var el=window.__yjaiSub; if(!el) return 'NO_EL';
+          try{ el.scrollIntoView({block:'center'}); }catch(e){}
+          var r=el.getBoundingClientRect(), cx=Math.round(r.left+r.width/2), cy=Math.round(r.top+r.height/2);
+          var opt={bubbles:true,cancelable:true,composed:true,clientX:cx,clientY:cy,button:0,buttons:1};
+          try{ el.dispatchEvent(new PointerEvent('pointerdown',Object.assign({pointerType:'mouse'},opt))); }catch(e){}
+          try{ el.dispatchEvent(new MouseEvent('mousedown',opt)); }catch(e){}
+          try{ el.dispatchEvent(new PointerEvent('pointerup',Object.assign({pointerType:'mouse'},opt,{buttons:0}))); }catch(e){}
+          try{ el.dispatchEvent(new MouseEvent('mouseup',Object.assign({},opt,{buttons:0}))); }catch(e){}
+          try{ el.click(); }catch(e){ return 'CLICK_ERR:'+e.message; }
+          return 'OK';
+        })()`)) || '');
+      } catch (_) {}
+      return { ok: true, hit: (info.hit || '提交按钮') + (f.depth > 0 ? (' @iframe(' + shortUrl(f.url) + ')') : ' @top'), text: info.text || '', mode: 'dom-click', dispatched: dispatched, diag: diag };
+    }
+    return { ok: false, error: 'NOT_FOUND', diag: diag };
+  } catch (err) {
+    return { error: String(err && err.message || err) };
+  } finally {
+    if (attached) { try { wc.debugger.detach(); } catch (_) {} }
   }
 });
 
