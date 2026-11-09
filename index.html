@@ -1845,12 +1845,20 @@ async function submitViaFrames(){
   try{
     const r = await window.YJAI.cdpSubmit();
     if(r && r.ok){
+      if(r.mode==='enter'){
+        if(r.submitted){
+          brLog('提交：已在分数框按回车（'+r.value+' 分，'+r.hit+'），页面已响应','i');
+        }else{
+          brLog('提交：已在分数框按回车（'+r.value+' 分，'+r.hit+'）⚠ 页面未见变化，请在浏览器里确认这份是否已提交','w');
+        }
+        return true;
+      }
       brLog('提交点击：命中「'+(r.text||r.hit||'提交')+'」（'+(r.hit||'')+'，DOM 点击）', 'i');
       return true;
     }
     if(r && r.error && r.error !== 'NOT_FOUND') brLog('提交点击失败: '+r.error, 'w');
     if(r && r.diag) brLog('帧诊断：'+String(r.diag).slice(0,320), 'i');
-    if(r && r.cands) brLog('提交候选：'+String(r.cands).slice(0,320), 'w');
+    if(r && r.cands) brLog('提交未命中，帧内候选：'+String(r.cands).slice(0,320), 'w');
   }catch(e){ brLog('提交点击异常: '+e.message, 'w'); }
   return false;
 }

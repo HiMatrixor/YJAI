@@ -879,6 +879,57 @@ function scoreFindExpr(hintX, hintY) {
     return JSON.stringify({r:'OK', hit:tagOf(best), how:how, x:Math.round(rb.left+rb.width/2), y:Math.round(rb.top+rb.height/2), value:String(best.value==null?'':best.value), url:location.href, isTop:(window.top===window.self), inputs:document.querySelectorAll('input,textarea').length});
   })()`;
 }
+/* ============ 回车提交（v1.9.17） ============ */
+// 17阅卷 / e卷通的评分面板根本没有「提交」按钮：分数框绑的是 @keyup.enter，
+// 人工在框里敲一下回车就把这份交上去了（用户实测）。所以提交优先走「回车」，
+// 按钮点击只作为没有分数框的平台的后备方案。
+function enterTargetExpr() {
+  return `(function(){
+    function vis(e){ if(!e) return false; var r=e.getBoundingClientRect(); if(r.width<4||r.height<4) return false; var s=null; try{ s=getComputedStyle(e); }catch(err){} if(!s) return true; return !(s.visibility==='hidden'||s.display==='none'); }
+    function tagOf(e){ var c=(e.className&&typeof e.className==='string')?e.className:''; return e.tagName+(e.id?'#'+e.id:'')+(c?'.'+String(c).trim().split(/\\s+/).slice(0,2).join('.'):''); }
+    function norm(t){ return String(t==null?'':t).replace(/[\\s\\u00a0\\u3000]+/g,''); }
+    var ins=document.querySelectorAll('input,textarea'), pick=null, pickS=0, cands=[];
+    for(var i=0;i<ins.length;i++){
+      var el=ins[i];
+      if(!vis(el)||el.disabled||el.readOnly) continue;
+      var t=String(el.type||'text').toLowerCase();
+      if(el.tagName!=='TEXTAREA' && t!=='text' && t!=='number' && t!=='tel') continue;
+      var key=String(el.className||'')+' '+String(el.id||'')+' '+String(el.getAttribute&&el.getAttribute('placeholder')||'')+' '+String(el.getAttribute&&el.getAttribute('name')||'');
+      if(/search|keyword|filter|query|搜索|筛选|检索/i.test(key)) continue;   // 别把回车敲进搜索框
+      var v=norm(el.value), s=0;
+      if(/correct_custom_score|score-input|score_input|scoreinput/i.test(key)) s=14;
+      else if(/score|fenshu|mark|得分|分数|分值|评阅/i.test(key)) s=9;
+      if(!s){ if(cands.length<8) cands.push(tagOf(el)+'="'+v.slice(0,8)+'"'); continue; }
+      if(!v) s-=6;                     // 空值不像「刚填过分」的那个框
+      if(s>pickS){ pick=el; pickS=s; }
+    }
+    window.__yjaiEnter=null;
+    if(!pick) return JSON.stringify({r:'NO_INPUT', url:location.href, isTop:(window.top===window.self), cands:cands.join('|')});
+    try{ pick.scrollIntoView({block:'center'}); }catch(e){}
+    try{ pick.focus(); }catch(e){}
+    try{ var L=String(pick.value||'').length; pick.setSelectionRange(L,L); }catch(e){}
+    window.__yjaiEnter=pick;
+    return JSON.stringify({r:'OK', hit:tagOf(pick), value:norm(pick.value), focused:(document.activeElement===pick), url:location.href, isTop:(window.top===window.self)});
+  })()`;
+}
+// 回车之后回头看一眼：框没了 / 被隐藏 / 值被清空，都说明平台已经收下并翻到下一份
+function afterEnterExpr() {
+  return `(function(){
+    var el=window.__yjaiEnter, ex=false, v='', hid=true;
+    try{ ex = !!(el && el.isConnected && document.documentElement.contains(el)); }catch(e){ ex=false; }
+    if(ex){
+      try{ v=String(el.value==null?'':el.value); }catch(e){}
+      try{ var r=el.getBoundingClientRect(); hid = !r || r.width<4 || r.height<4; }catch(e){ hid=true; }
+    }
+    return JSON.stringify({exists:ex, hidden:hid, value:v, url:location.href});
+  })()`;
+}
+async function pressEnter(wc) {
+  const base = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
+  try { await wc.debugger.sendCommand('Input.dispatchKeyEvent', Object.assign({ type: 'rawKeyDown' }, base)); } catch (_) {}
+  try { await wc.debugger.sendCommand('Input.dispatchKeyEvent', Object.assign({ type: 'char', text: '\r', unmodifiedText: '\r' }, base)); } catch (_) {}
+  try { await wc.debugger.sendCommand('Input.dispatchKeyEvent', Object.assign({ type: 'keyUp' }, base)); } catch (_) {}
+}
 function submitFindExpr() {
   // v1.9.16：各平台的提交按钮文字不统一（「提交分数」「提交批改」「确认批阅」「保存并下一位」…），
   // 精确白名单太容易漏。改成「按语义打分 + 可点击性过滤 + 黑名单排除」，并且找不到时把候选打回日志。
@@ -984,6 +1035,29 @@ ipcMain.handle('browser:cdp-submit', async () => {
     const diag = 'frames=' + frames.length + '[' + frames.map(f => f.depth + ':' + shortUrl(f.url)).join(' ') + ']';
     const ordered = frames.filter(f => f.depth > 0).concat(frames.filter(f => f.depth === 0));
     const notFound = [];
+    // ---------- 阶段 1：回车提交（17阅卷 / e卷通没有提交按钮，分数框绑的是 keyup.enter）----------
+    for (const f of ordered) {
+      let ctx = null;
+      try { ctx = await openFrameWorld(wc, f.id, 'yjai_ent_' + f.depth); } catch (_) { continue; }
+      if (!ctx) continue;
+      let info = null;
+      try { info = JSON.parse(String((await evalCtx(wc, ctx, enterTargetExpr())) || '')); } catch (_) { info = null; }
+      if (!info || info.r !== 'OK') {
+        if (info && info.cands) notFound.push('d' + f.depth + ':' + info.cands);
+        continue;
+      }
+      await pressEnter(wc);
+      await new Promise(r => setTimeout(r, 420));
+      let after = null;
+      try { after = JSON.parse(String((await evalCtx(wc, ctx, afterEnterExpr())) || '')); } catch (_) { after = null; }
+      const submitted = !!after && (!after.exists || after.hidden || String(after.value) !== String(info.value));
+      return {
+        ok: true, mode: 'enter', hit: 'ENTER @' + (f.depth > 0 ? 'iframe(' + shortUrl(f.url) + ')' : 'top'),
+        text: '回车提交', value: info.value, focused: !!info.focused, submitted: submitted, after: after,
+        diag: diag, cands: notFound.join(' || ')
+      };
+    }
+    // ---------- 阶段 2：语义按钮点击（没有分数框、只能点按钮的平台）----------
     for (const f of ordered) {
       let ctx = null;
       try { ctx = await openFrameWorld(wc, f.id, 'yjai_sub_' + f.depth); } catch (_) { continue; }
