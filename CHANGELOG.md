@@ -1,5 +1,32 @@
 # YJAI · AI 阅卷助手 更新日志
 
+## v1.9.14（2026-11-09）
+
+**浏览器阅卷：修复 v1.9.13 的「假成功」——跨域 iframe 内分数没输入、没提交，日志却报完成 ✓**
+
+- 反馈平台：`web.17yuejuan.cn/oms/web/oemimoms/index.html`（17阅卷）。日志现象：
+  `CDP 键盘输入成功：6 分（iframe 内 …，顶层派发） ⚠无法回读 iframe 内输入框的值` →
+  `提交点击命中元素: FRAME（CDP 穿透 iframe）` → `第 1 份完成 ✓ 得分 6`，
+  实际分数没输入、也没提交；再点「自动识别元素」报「分数输入框=未找到，提交按钮=未找到」。
+- 根因：打分板整块位于**跨域 OOPIF iframe**（独立渲染进程）。v1.9.13 在【顶层 target】
+  派发鼠标/键盘，事件只落在 iframe 外壳（日志命中 `FRAME`），浏览器不会替 webview guest
+  把输入路由进 OOPIF；提交点击同理。更糟的是读不到值时仍返回 `ok:true`，自动阅卷
+  照常记「完成 ✓」，把失败完全掩盖了。「自动识别元素」只扫 `contentDocument`，
+  对跨域 iframe 恒为空，所以连元素都找不到。
+- 修复：
+  1. 新增 OOPIF 会话发现：每次先 `Target.setDiscoverTargets` + `Target.setAutoAttach`，
+     再 `Target.getTargets` / `Target.attachToTarget(flatten)`。之前 `getTargets` 默认
+     只返回 page 级 target，所以一直匹配不到 iframe。
+  2. 填分改为**在 iframe 自己的 CDP 会话内**定位元素并派发 `Input.insertText`；
+     受控组件没吃下时补原生 setter + `input`/`change`；若该帧没有输入框
+     （键盘给分型平台），在同一会话内派发数字键，不再敲到顶层。
+  3. 提交点击同样改为在 iframe 会话内用 **iframe 内局部坐标**派发完整点击序列，
+     日志区分 `iframe-session` 与 `cdp-top`，后者一律打 ⚠ 提示。
+  4. **堵住假成功**：既没拿到 iframe 会话、也没回读确认分数，一律返回失败并中断阅卷；
+     「回读不一致」不再放行。日志新增「iframe 会话诊断」（target 数量 / 类型 / URL）。
+  5. 「自动识别元素」新增跨域 iframe 补查：逐个 iframe 会话执行识别脚本，
+     把 iframe 内局部坐标换算回顶层窗口坐标，日志写明「跨域 iframe 内识别到」。
+
 ## v1.9.13（2026-11-09）
 
 **浏览器阅卷：修复分数输入框在 iframe 内时「完全没调用键盘输入」、报「未找到 iframe 对应的渲染目标」**

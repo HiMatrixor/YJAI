@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('YJAI', {
   cdpFill: (payload) => ipcRenderer.invoke('browser:cdp-fill', payload),
   cdpFillTop: (payload) => ipcRenderer.invoke('browser:cdp-fill-top', payload),
   cdpFillIframe: (payload) => ipcRenderer.invoke('browser:cdp-fill-iframe', payload),
+  cdpDetectIframes: () => ipcRenderer.invoke('browser:cdp-detect-iframes'),
 
   // —— 浏览器窗口调用 ——
   onBrowserAction: (cb) => ipcRenderer.on('browser:action', (e, msg) => cb(msg)),
