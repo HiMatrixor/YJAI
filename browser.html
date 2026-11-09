@@ -365,11 +365,12 @@ window.YJAI.onBrowserAction(async (msg)=>{
               var ix = cx - r.left, iy = cy - r.top;
               var idoc = null;
               try{ idoc = el.contentDocument; }catch(e){}
-              // 跨域 iframe：Chrome 访问 contentDocument 返回 null（不抛异常），必须按 null 判定
+              // 无论同源还是跨域：命中 iframe 一律标记 cross，交由顶层 CDP 真实点击。
+              // 之前同源时在 document.elementFromPoint(x,y) 拿到的是 iframe 外壳，
+              // 合成 click 落在壳上，日志显示成功但平台没反应。
               if(idoc && el.contentWindow){
                 var inner = descend(idoc, ix, iy, depth+1);
-                if(inner) return inner;
-                return {hit:tagOf(el), cross:true, ix:Math.round(ix), iy:Math.round(iy), src:el.src||''};
+                if(inner && inner.hit !== 'NONE') return {hit:inner.hit, cross:true};
               }
               return {hit:tagOf(el), cross:true, ix:Math.round(ix), iy:Math.round(iy), src:el.src||''};
             }
@@ -440,10 +441,10 @@ window.YJAI.onBrowserAction(async (msg)=>{
               var ix = cx - r.left, iy = cy - r.top;
               var idoc = null;
               try{ idoc = el.contentDocument; }catch(e){}
-              // 跨域 iframe：Chrome 访问 contentDocument 返回 null（不抛异常），必须按 null 判定
+              // 同源 iframe 同样不能用顶层合成事件（会落在 iframe 外壳上）：统一交给 CDP
               if(idoc && el.contentWindow){
                 var inner = descend(idoc, ix, iy, depth+1);
-                if(inner) return inner;
+                if(inner && inner.hit !== 'NONE') return {hit:inner.hit, cross:true};
               }
               return {hit:tagOf(el), cross:true, ix:Math.round(ix), iy:Math.round(iy), src:el.src||''};
             }

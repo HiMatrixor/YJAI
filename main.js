@@ -332,29 +332,69 @@ ipcMain.handle('browser:cdp-fill', async (e, payload) => {
   let attached = false;
   try {
     if (!wc.debugger.isAttached()) { wc.debugger.attach('1.3'); attached = true; }
-    // 顶层探针：定位坐标处 iframe 及局部坐标
+    // 顶层探针：递归下钻（同源 iframe 可直接读 contentDocument）
     const probe = await wc.debugger.sendCommand('Runtime.evaluate', {
       returnByValue: true,
       expression: `(function(){
         function res(doc, cx, cy, depth){
           var el = doc.elementFromPoint(cx, cy);
-          if(!el) return {hit:'NONE'};
+          if(!el) return {r:'NONE'};
           if((el.tagName==='IFRAME'||el.tagName==='FRAME') && depth<8){
             var r = el.getBoundingClientRect();
-            return {cross:true, ix:Math.round(cx-r.left), iy:Math.round(cy-r.top), src:el.src||''};
+            var nx = Math.round(cx-r.left), ny = Math.round(cy-r.top);
+            var idoc = null; try{ idoc = el.contentDocument; }catch(err){}
+            if(idoc && el.contentWindow){
+              var inner = res(idoc, nx, ny, depth+1);
+              if(inner && inner.r === 'OK') return {r:'SAME', ix:nx, iy:ny, src:el.src||''};
+            }
+            return {r:'CROSS', cross:true, ix:nx, iy:ny, src:el.src||''};
           }
-          return {cross:false};
+          if(el.tagName==='INPUT'||el.tagName==='TEXTAREA') return {r:'OK'};
+          var i = el.querySelector('input, textarea');
+          return i ? {r:'OK'} : {r:'NOT_INPUT'};
         }
         return res(document, ${x}, ${y}, 0);
       })()`
     });
     const info = (probe && probe.result && probe.result.value) || {};
+    // 同源 iframe：顶层文档即可递归定位，直接原生 setter 赋值 + 派发 input/change（不需要 iframe target）
+    if (info.r === 'SAME') {
+      const r0 = await wc.debugger.sendCommand('Runtime.evaluate', {
+        returnByValue: true,
+        expression: `(function(){
+          function walk(doc, cx, cy, depth){
+            var el=doc.elementFromPoint(cx,cy); if(!el) return null;
+            if((el.tagName==='IFRAME'||el.tagName==='FRAME') && depth<8){
+              var r=el.getBoundingClientRect(), idoc=null; try{ idoc=el.contentDocument; }catch(err){}
+              if(idoc) return walk(idoc, cx-r.left, cy-r.top, depth+1);
+              return null;
+            }
+            if(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){ var i=el.querySelector('input,textarea'); if(i) el=i; else return null; }
+            return el;
+          }
+          var el = walk(document, ${x}, ${y}, 0);
+          if(!el) return JSON.stringify({r:'NONE'});
+          var v = ${JSON.stringify(String(value))};
+          var proto = (el.tagName==='TEXTAREA') ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+          var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+          el.focus();
+          if(setter) setter.call(el, v); else el.value = v;
+          try{ el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:v})); }
+          catch(e){ try{ el.dispatchEvent(new Event('input',{bubbles:true})); }catch(e2){} }
+          try{ el.dispatchEvent(new Event('change',{bubbles:true})); }catch(e){}
+          return JSON.stringify({r:'OK', v:el.value, hit:el.tagName+(el.id?'#'+el.id:'')});
+        })()`
+      });
+      let o0 = {}; try { o0 = JSON.parse((r0 && r0.result && r0.result.value) || '{}'); } catch (_) {}
+      if (o0.r === 'OK' && String(o0.v) === String(value)) return { ok: true, hit: o0.hit || '', mode: 'same-origin-dom' };
+      return { error: '同源 iframe 内赋值回读不一致：实际=' + (o0.v || o0.r || '?'), hit: o0.hit || '' };
+    }
     if (!info.cross) return { error: '目标不在 iframe 内，请用元素拾取模式' };
-    // 找 iframe target
+    // 找 iframe target：放宽匹配（同源 iframe / url 带动态参数 / 已 attach / type=page 的 OOPIF 都要能命中）
     const { targetInfos } = await wc.debugger.sendCommand('Target.getTargets');
     const srcBase = String(info.src || '').split('#')[0];
     const srcPath = srcBase.split('?')[0];
-    const cands = (targetInfos || []).filter(t => t.type === 'iframe' && t.attached !== true);
+    const cands = (targetInfos || []).filter(t => (t.type === 'iframe' || t.type === 'page') && t.url && t.url !== 'about:blank');
     let best = null;
     for (const t of cands) {
       const u = String(t.url || '');
@@ -367,7 +407,8 @@ ipcMain.handle('browser:cdp-fill', async (e, payload) => {
         best = cands.find(t => { try { return new URL(t.url).origin === so; } catch (_) { return false; } });
       } catch (_) {}
     }
-    if (!best) return { error: '未找到 iframe 对应的渲染目标（src=' + srcBase + '）' };
+    if (!best) best = cands.find(t => t.type === 'iframe') || null;
+    if (!best) return { error: '未找到 iframe 对应的渲染目标（src=' + srcBase + '），已改用顶层键盘输入' };
     const at = await wc.debugger.sendCommand('Target.attachToTarget', { targetId: best.targetId, flatten: true });
     const sid = at.sessionId;
     let result = '', hit = '';
@@ -531,6 +572,162 @@ ipcMain.handle('browser:cdp-fill-top', async (e, payload) => {
     } catch (_) {}
     if (String(finalVal) === val) return { ok: true, hit, mode: 'cdp-keyboard' };
     return { error: 'CDP 键盘输入后回读不一致：实际=' + finalVal, hit, mode: 'cdp-keyboard' };
+  } catch (err) {
+    return { error: String(err && err.message || err) };
+  } finally {
+    if (attached) { try { wc.debugger.detach(); } catch (e2) { /* ignore */ } }
+  }
+});
+
+/* ============ iframe 内输入框：顶层 CDP 真实键盘输入（v1.9.13 关键修复） ============ */
+// 17阅卷 / oemimoms 等平台把分数框放在 iframe 内（同源 iframe 或跨域 OOPIF 都有可能）。
+// 旧路径 browser:cdp-fill 是「找 iframe 对应的 CDP target → 在该 target 内 DOM 赋值」，
+// 一旦 Target.getTargets 找不到匹配 target（同源 iframe 没有独立 target、url 带动态参数、
+// target 已被 attach 等），就直接报「未找到 iframe 对应的渲染目标」，键盘输入一次都没被调用。
+// 正确做法（与 Puppeteer 一致）：在【顶层 target】用原始窗口坐标派发
+//   mousePressed/Released → Ctrl+A → Input.insertText，
+// 浏览器合成器会把鼠标与键盘事件自动路由进 iframe（含 OOPIF），Vue/React 受控输入同样响应。
+ipcMain.handle('browser:cdp-fill-iframe', async (e, payload) => {
+  const { x, y, value } = payload || {};
+  const guests = webContents.getAllWebContents().filter(w => !w.isDestroyed() && w.getType() === 'webview');
+  const wc = guests.find(w => { try { const u = w.getURL(); return u && !/^about:blank/.test(u); } catch (_) { return false; } }) || guests[0] || null;
+  if (!wc || wc.isDestroyed()) return { error: '未找到浏览器页面（webview）' };
+  if (x == null || y == null) return { error: '缺少输入框坐标' };
+  const val = String(value);
+  if (!val) return { error: '缺少要填入的值' };
+  const rbx = x, rby = y;
+  let attached = false;
+  try {
+    if (!wc.debugger.isAttached()) { wc.debugger.attach('1.3'); attached = true; }
+    try { await wc.debugger.sendCommand('Page.bringToFront'); } catch (_) {}
+
+    // 1) 顶层探针：沿 iframe 递归（同源可穿透），拿到 iframe src / 局部坐标 / 输入框标签
+    const probe = await wc.debugger.sendCommand('Runtime.evaluate', {
+      returnByValue: true,
+      expression: `(function(){
+        function walk(doc, cx, cy, depth){
+          var el = doc.elementFromPoint(cx, cy);
+          if(!el) return {r:'NONE'};
+          if((el.tagName==='IFRAME'||el.tagName==='FRAME') && depth<8){
+            var r = el.getBoundingClientRect();
+            var nx = cx - r.left, ny = cy - r.top;
+            var idoc = null; try{ idoc = el.contentDocument; }catch(err){}
+            if(idoc && el.contentWindow){
+              var inner = walk(idoc, nx, ny, depth+1);
+              if(inner && inner.r==='OK'){
+                return {r:'OK', hit:inner.hit, inFrame:true, sameOrigin:true, src:el.src||'', ix:Math.round(nx), iy:Math.round(ny)};
+              }
+            }
+            return {r:'CROSS', cross:true, src:el.src||'', ix:Math.round(nx), iy:Math.round(ny)};
+          }
+          if(el.tagName!=='INPUT' && el.tagName!=='TEXTAREA'){
+            var i = el.querySelector('input, textarea');
+            if(i) el = i; else return {r:'NOT_INPUT', hit:el.tagName};
+          }
+          return {r:'OK', hit:el.tagName+(el.id?'#'+el.id:''), inFrame:depth>0, sameOrigin:true, src:'', ix:Math.round(cx), iy:Math.round(cy)};
+        }
+        return walk(document, ${x}, ${y}, 0);
+      })()`
+    });
+    const info = (probe && probe.result && probe.result.value) || {};
+    const rbx2 = (info.ix != null ? info.ix : rbx);
+    const rby2 = (info.iy != null ? info.iy : rby);
+
+    // 2) 顶层派发真实鼠标点击（原始窗口坐标，浏览器自动路由进 iframe）
+    await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+    await sleepMs(30);
+    await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1, buttons: 1 });
+    await sleepMs(40);
+    await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1, buttons: 0 });
+    await sleepMs(160);
+
+    // 3) Ctrl+A 全选 → Input.insertText（受信任输入，覆盖旧值）
+    const keyA = { modifiers: 2, key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65 };
+    await wc.debugger.sendCommand('Input.dispatchKeyEvent', Object.assign({ type: 'keyDown' }, keyA));
+    await wc.debugger.sendCommand('Input.dispatchKeyEvent', Object.assign({ type: 'keyUp' }, keyA));
+    await sleepMs(60);
+    await wc.debugger.sendCommand('Input.insertText', { text: val });
+    await sleepMs(200);
+
+    // 4) 回读验证：同源 iframe 可直接递归读；跨域用 CDP target 只读（放宽匹配）
+    let verified = false, warn = '', hit = info.hit || '';
+    try {
+      const rr = await wc.debugger.sendCommand('Runtime.evaluate', {
+        returnByValue: true,
+        expression: `(function(){
+          function walk(doc, cx, cy, depth){
+            var el = doc.elementFromPoint(cx, cy); if(!el) return null;
+            if((el.tagName==='IFRAME'||el.tagName==='FRAME') && depth<8){
+              var r=el.getBoundingClientRect(), idoc=null;
+              try{ idoc=el.contentDocument; }catch(err){}
+              if(idoc) return walk(idoc, cx-r.left, cy-r.top, depth+1);
+              return null;
+            }
+            if(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){ var i=el.querySelector('input,textarea'); if(i) el=i; else return null; }
+            return el;
+          }
+          var el = walk(document, ${x}, ${y}, 0);
+          if(!el) return '';
+          return JSON.stringify({v:el.value, tag:el.tagName+(el.id?'#'+el.id:'')});
+        })()`
+      });
+      let o = {}; try { o = JSON.parse((rr && rr.result && rr.result.value) || '{}'); } catch (_) {}
+      if (String(o.v) === val) { verified = true; hit = o.tag || hit; }
+    } catch (_) {}
+
+    // 4b) 跨域：遍历 CDP target 只读回读（不再要求 url 精确匹配 / attached===false）
+    if (!verified) {
+      try {
+        const { targetInfos } = await wc.debugger.sendCommand('Target.getTargets');
+        const srcBase = String(info.src || '').split('#')[0];
+        const srcPath = srcBase.split('?')[0];
+        let origin = ''; try { origin = new URL(srcBase).origin; } catch (_) {}
+        const rank = (t) => {
+          const u = String(t.url || '');
+          if (srcBase && (u === srcBase || u.startsWith(srcBase))) return 5;
+          if (srcPath && u.split('?')[0] === srcPath) return 4;
+          try { if (origin && new URL(u).origin === origin) return 3; } catch (_) {}
+          return t.type === 'iframe' ? 2 : 1;
+        };
+        const all = (targetInfos || []).filter(t => (t.type === 'iframe' || t.type === 'page') && t.url && t.url !== 'about:blank');
+        all.sort((a, b) => rank(b) - rank(a));
+        for (const t of all.slice(0, 8)) {
+          let sid = null;
+          try {
+            const at = await wc.debugger.sendCommand('Target.attachToTarget', { targetId: t.targetId, flatten: true });
+            sid = at.sessionId;
+            const rr = await wc.debugger.sendCommand('Runtime.evaluate', {
+              returnByValue: true,
+              expression: `(function(){ var ae=document.activeElement, el=ae; if(!el) return ''; if(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){ el=document.elementFromPoint(${rbx2},${rby2}); if(el&&el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA'){ var i=el.querySelector('input,textarea'); if(i) el=i; } } if(!el||(el.tagName!=='INPUT'&&el.tagName!=='TEXTAREA')) return ''; return JSON.stringify({v:el.value, tag:el.tagName+(el.id?'#'+el.id:'')}); })()`
+            }, sid);
+            let o = {}; try { o = JSON.parse((rr && rr.result && rr.result.value) || '{}'); } catch (_) {}
+            if (String(o.v) === val) { verified = true; hit = o.tag || hit; }
+          } catch (_) {}
+          finally { if (sid) { try { await wc.debugger.sendCommand('Target.detachFromTarget', { sessionId: sid }); } catch (_) {} } }
+          if (verified) break;
+        }
+      } catch (_) {}
+    }
+
+    // 4c) 回读不到（跨域且无可用 target）：改用逐字符完整键盘链再输一遍；
+    //     顶层 CDP 输入已派发，不因「读不到」而中断阅卷，只给 warn 提示人工确认。
+    if (!verified) {
+      try {
+        await wc.debugger.sendCommand('Input.dispatchKeyEvent', Object.assign({ type: 'keyDown' }, keyA));
+        await wc.debugger.sendCommand('Input.dispatchKeyEvent', Object.assign({ type: 'keyUp' }, keyA));
+        await wc.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46, nativeVirtualKeyCode: 46 });
+        await wc.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46, nativeVirtualKeyCode: 46 });
+        await sleepMs(60);
+        for (const ch of val) {
+          await wc.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, text: ch, windowsVirtualKeyCode: 0, nativeVirtualKeyCode: 0 });
+          await wc.debugger.sendCommand('Input.dispatchKeyEvent', { type: 'keyUp', key: ch, windowsVirtualKeyCode: 0, nativeVirtualKeyCode: 0 });
+          await sleepMs(30);
+        }
+        await sleepMs(120);
+      } catch (_) {}
+      warn = '无法回读 iframe 内输入框的值（已派发顶层键盘输入 + 逐字符键盘链，请在浏览器窗口确认）';
+    }
+    return { ok: true, hit: hit || 'iframe 内输入框', verified, mode: 'cdp-keyboard-top', inFrame: !!info.inFrame || !!info.cross, warn };
   } catch (err) {
     return { error: String(err && err.message || err) };
   } finally {
