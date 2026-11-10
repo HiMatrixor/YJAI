@@ -688,6 +688,7 @@
           <button class="btn btn-ghost" id="btnCheckUpdate">检查更新</button>
           <button class="btn btn-primary" id="btnDownloadUpdate" style="display:none">下载更新</button>
           <button class="btn btn-primary" id="btnInstallUpdate" style="display:none">立即重启安装</button>
+          <button class="btn btn-ghost" id="btnManualDownload">手动下载</button>
         </div>
         <div class="hint" id="updateStatus" style="margin-top:10px"></div>
       </div>
@@ -3735,6 +3736,14 @@ function bindEvents(){
   $('#btnCheckUpdate').onclick=async()=>{ $('#updateStatus').textContent='正在检查更新…'; $('#updateStatus').style.color='var(--muted)'; if(window.YJAI&&YJAI.checkUpdate){ const r=await YJAI.checkUpdate(); if(r&&r.error) updateStatusText('❌ '+r.error); } };
   $('#btnDownloadUpdate').onclick=async()=>{ $('#updateStatus').textContent='开始下载更新…'; $('#updateStatus').style.color='var(--muted)'; if(window.YJAI&&YJAI.downloadUpdate){ const r=await YJAI.downloadUpdate(); if(r&&r.error) updateStatusText('❌ '+r.error); } };
   $('#btnInstallUpdate').onclick=async()=>{ if(window.YJAI&&YJAI.installUpdate) YJAI.installUpdate(); };
+  // 兜底：GitHub 直连被墙时，用浏览器从镜像拉安装包（镜像慢可多等一会儿）
+  $('#btnManualDownload').onclick=async()=>{
+    if(!(window.YJAI&&YJAI.manualDownload)){ updateStatusText('❌ 当前版本不支持手动下载，请到 GitHub Releases 页获取'); return; }
+    updateStatusText('正在打开下载链接…');
+    const r=await YJAI.manualDownload();
+    if(r&&r.ok) updateStatusText('✅ 已在浏览器打开下载链接，下载完成后手动安装即可');
+    else updateStatusText('❌ '+((r&&r.error)||'打开下载链接失败'));
+  };
   $('#tplList').addEventListener('click',e=>{
     const b=e.target.closest('button[data-tpl]');if(!b)return;
     const act=b.dataset.act,id=b.dataset.tpl;
@@ -3801,7 +3810,7 @@ function initUpdater(){
         $('#btnDownloadUpdate').style.display='none';
         $('#btnInstallUpdate').style.display='';
       }
-      else if(p.state==='error'){ el.textContent='❌ '+(p.message||'更新出错'); el.style.color='var(--red)'; }
+      else if(p.state==='error'){ let m=(p.message||'更新出错'); if(m.indexOf('手动下载')<0) m+='　（可点「手动下载」用浏览器获取）'; el.textContent='❌ '+m; el.style.color='var(--red)'; }
     });
   }
 }

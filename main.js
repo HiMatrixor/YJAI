@@ -26,6 +26,57 @@ autoUpdater.autoDownload = false;   // 先检查，让用户确认后再下载
 autoUpdater.autoInstallOnAppQuit = true;
 autoUpdater.logger = null;
 
+/* ---------- 更新源：github.com 资产域名在国内常被重置，改走多镜像 ----------
+   实测（2026-11-10 本机）：api.github.com 正常 200，但
+   https://github.com/HiMatrixor/YJAI/releases/latest/download/latest.yml 直接 fetch failed
+   —— electron-updater 的 github provider 正是要下这个文件，所以客户端一直「检查更新失败」。
+   改成 generic provider + 逐个探测镜像，挑第一个能拿到 latest.yml 的源。 */
+const GH_LATEST = 'https://github.com/HiMatrixor/YJAI/releases/latest/download';
+const UPDATE_MIRRORS = [
+  'https://gh-proxy.com/' + GH_LATEST,
+  'https://ghproxy.net/' + GH_LATEST,
+  'https://gh.llkk.cc/' + GH_LATEST,
+  'https://ghp.ci/' + GH_LATEST,
+  GH_LATEST
+];
+let feedPicked = '';
+
+function probeFeed(base) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    const ctrl = new AbortController();
+    const to = setTimeout(() => { try { ctrl.abort(); } catch (_) {} finish(false); }, 4000);
+    fetch(base + '/latest.yml', { signal: ctrl.signal, redirect: 'follow', cache: 'no-store' })
+      .then(async (r) => {
+        if (!r.ok) return finish(false);
+        const t = await r.text();
+        finish(/^version:\s*\d/m.test(t));
+      })
+      .catch(() => finish(false))
+      .finally(() => clearTimeout(to));
+  });
+}
+async function pickFeed(force) {
+  if (feedPicked && !force) return feedPicked;
+  for (const m of UPDATE_MIRRORS) {
+    if (await probeFeed(m)) { feedPicked = m; return m; }
+  }
+  feedPicked = '';
+  return '';
+}
+// 统一入口：选源 → setFeedURL → checkForUpdates
+async function runUpdateCheck(forceFeed) {
+  const url = await pickFeed(!!forceFeed);
+  if (!url) {
+    sendUpdate('update:status', { state: 'error', message: '连不上更新服务器（GitHub 直连与镜像均不可达），可点「手动下载」用浏览器获取安装包' });
+    return { error: '无法连接更新源' };
+  }
+  try { autoUpdater.setFeedURL({ provider: 'generic', url }); } catch (_) {}
+  autoUpdater.checkForUpdates();
+  return { feed: url };
+}
+
 function sendUpdate(channel, payload) {
   if (mainWin && !mainWin.isDestroyed()) {
     mainWin.webContents.send(channel, payload);
@@ -56,15 +107,15 @@ autoUpdater.on('error', (err) => {
   if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|ECONNRESET|getaddrinfo|aborted|timed out|net::ERR/i.test(raw) && retryCount < 1) {
     retryCount++;
     sendUpdate('update:status', { state: 'checking', retry: retryCount });
-    setTimeout(() => { try { autoUpdater.checkForUpdates(); } catch (_) {} }, 3000);
+    setTimeout(() => { runUpdateCheck(true).catch(() => {}); }, 3000);
     return;
   }
   retryCount = 0;
   sendUpdate('update:status', { state: 'error', message: friendly });
 });
 
-ipcMain.handle('update:check', () => {
-  try { retryCount = 0; autoUpdater.checkForUpdates(); return true; }
+ipcMain.handle('update:check', async () => {
+  try { retryCount = 0; return await runUpdateCheck(true); }
   catch (e) { return { error: String(e.message || e) }; }
 });
 ipcMain.handle('update:download', () => {
@@ -76,6 +127,22 @@ ipcMain.handle('update:install', () => {
   catch (e) { return { error: String(e.message || e) }; }
 });
 ipcMain.handle('update:version', () => ({ version: app.getVersion() }));
+// 手动下载兜底：镜像连不上/客户端下载失败时，直接用浏览器拉安装包
+ipcMain.handle('update:manual', async () => {
+  try {
+    let name = '';
+    try {
+      const r = await fetch('https://api.github.com/repos/HiMatrixor/YJAI/releases/latest', { headers: { 'User-Agent': 'yjai-updater' } });
+      const j = await r.json();
+      const ex = (j && j.assets || []).find(a => /\.exe$/i.test(a.name || ''));
+      if (ex) name = ex.name;
+    } catch (_) {}
+    const base = feedPicked || UPDATE_MIRRORS[0];
+    const url = name ? (base + '/' + name) : (base + '/latest.yml');
+    shell.openExternal(url);
+    return { ok: true, url: url };
+  } catch (e) { return { error: String(e.message || e) }; }
+});
 
 function getBrowserWin() {
   return (browserWin && !browserWin.isDestroyed()) ? browserWin : null;
@@ -1098,10 +1165,8 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
-  // 启动后延迟自动检查更新（仅打包环境生效）
-  setTimeout(() => {
-    try { autoUpdater.checkForUpdates(); } catch (e) { /* 开发环境忽略 */ }
-  }, 5000);
+  // 启动后延迟自动检查更新（仅打包环境生效）：走镜像选源
+  setTimeout(() => { runUpdateCheck(false).catch(() => { /* 开发环境忽略 */ }); }, 5000);
 });
 
 app.on('window-all-closed', () => {

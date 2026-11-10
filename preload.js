@@ -31,5 +31,6 @@ contextBridge.exposeInMainWorld('YJAI', {
   downloadUpdate: () => ipcRenderer.invoke('update:download'),
   installUpdate: () => ipcRenderer.invoke('update:install'),
   getVersion: () => ipcRenderer.invoke('update:version'),
+  manualDownload: () => ipcRenderer.invoke('update:manual'),
   onUpdateStatus: (cb) => ipcRenderer.on('update:status', (e, payload) => cb(payload))
 });

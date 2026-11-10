@@ -1,5 +1,26 @@
 # YJAI · AI 阅卷助手 更新日志
 
+## v1.9.18（2026-11-10）
+
+**修复「检查更新失败 / 更新下不动」：github.com 资产域名被重置，改走镜像源**
+
+- 实测定位（2026-11-10 本机）：
+  - `api.github.com/repos/HiMatrixor/YJAI/releases` → 200 正常（能查到 v1.9.17）；
+  - `github.com/HiMatrixor/YJAI/releases/latest/download/latest.yml` → `fetch failed`（连接被重置）；
+  - `https://gh-proxy.com/https://github.com/…/latest/download/latest.yml` → 200，内容正确；
+  - 镜像下安装包 `YJAI-Setup-1.9.17.exe` → 206 + `MZ` 头，通道可用。
+- 结论：electron-updater 的 github provider 必须从 `github.com` 拉 `latest.yml`，这一步在国内网络下必然失败，
+  所以「检查更新」永远报错或卡住。
+- 修复：
+  1. 更新源改为 **generic provider + 多镜像探测**：启动/检查时依次探测
+     `gh-proxy.com` → `ghproxy.net` → `gh.llkk.cc` → `ghp.ci` → GitHub 直连，
+     取第一个能拿到 `latest.yml` 的源（4 秒超时，逐个降级）。
+  2. 探测结果缓存，下载更新沿用同一个源；网络类错误自动换源重试一次。
+  3. 新增「手动下载」按钮：镜像都不可用时，直接用浏览器打开最新安装包下载地址（走同一镜像）。
+  4. 更新失败文案改为明确提示「连不上更新服务器，可点手动下载」，并在错误信息后追加操作指引。
+- 注意：**v1.9.17 及更早的客户端仍用旧的 github 直连逻辑，收不到这次修复**，
+  需要手动下载安装一次 v1.9.18；从这一版起，后续更新都走镜像，不再依赖 github.com 直连。
+
 ## v1.9.17（2026-11-09）
 
 **浏览器阅卷：改成「填完分直接敲回车」提交 —— 17阅卷/e卷通根本没有提交按钮**
