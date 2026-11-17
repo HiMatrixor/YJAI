@@ -318,6 +318,11 @@
             <button class="btn btn-ghost btn-sm" id="brPickDocs">📤 上传题目 / 答案</button>
             <button class="btn btn-ghost btn-sm" id="brParseDocs" style="display:none">🤖 解析为评分标准</button>
             <button class="btn btn-ghost btn-sm" id="brDocsClear" style="display:none">清空文件</button>
+            <select id="brDocEngine" style="max-width:260px" title="识别方式">
+              <option value="auto">识别：自动（文字优先，扫描件转大模型看图）</option>
+              <option value="vision">识别：大模型看图（公式/表格更准）</option>
+              <option value="text">识别：本地文字（最快）</option>
+            </select>
             <span class="hint" id="brDocsInfo" style="margin:0;align-self:center">支持 Word / PDF / txt / 图片，可多选（题目、答案各传一份也行）</span>
           </div>
           <input type="file" id="brDocsInput" accept=".docx,.pdf,.txt,.md,.png,.jpg,.jpeg,.webp,.bmp" multiple style="display:none" />
@@ -1134,7 +1139,29 @@ async function extractPdfText(file){
     const text = content.items.map(it => it.str).join(' ');
     parts.push(text);
   }
+  // 页数挂到 File 对象上，供「自动识别」判断是否为扫描件（无文字层）
+  try { file.__pdfPages = pdf.numPages; } catch(_) {}
   return parts.join('\n');
+}
+// 把 PDF 逐页渲染成图片，交给视觉大模型识别（扫描件、公式/表格、排版复杂时比文字层可靠）
+async function renderPdfPages(file, maxPages){
+  if(!window.pdfjsLib) throw new Error('pdf.js 未加载，请检查网络');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';
+  const pdf = await withTimeout(pdfjsLib.getDocument({data: await file.arrayBuffer()}).promise, 60000, 'PDF 解析超时：' + file.name);
+  const limit = Math.min(pdf.numPages, maxPages || 8);
+  const out = [];
+  for(let n=1;n<=limit;n++){
+    const page = await pdf.getPage(n);
+    let vp = page.getViewport({scale:2});
+    if(Math.max(vp.width, vp.height) > 1600) vp = page.getViewport({scale: 2 * 1600 / Math.max(vp.width, vp.height)});
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    await withTimeout(page.render({canvasContext:ctx, viewport:vp}).promise, 30000, 'PDF 页面渲染超时');
+    out.push({ pageNo: n, dataUrl: canvas.toDataURL('image/jpeg', 0.9) });
+  }
+  return { pages: out, total: pdf.numPages };
 }
 
 /* ================= 试卷 AI 解析 ================= */
@@ -1163,20 +1190,76 @@ function extractQuestionArray(parsed){
   return null;
 }
 // 将试卷文字交给 AI，识别题目（客观/主观）、答案、得分点
-// extraHint：额外说明（如「多个文件分别可能是题目与答案解析」），拼在提示词末尾
-async function parseExamPaper(rawText, extraHint){
-  const sys = '你是一位经验丰富的教研员，擅长解析试卷结构。';
-  const user = '请解析下面这份试卷/答案解析，识别所有题目。对每道题输出：题号、题型（客观题：单选/多选/填空/判断；主观题：简答/计算/论述/作文等）、题目内容、满分、标准答案（客观题必须有明确答案）、得分点（主观题分点列出）。\n\n【公式必须用 LaTeX，这是硬性要求】题目、答案、得分点中出现的所有数学/化学公式和符号，一律用 LaTeX 书写并加定界符：行内公式用 $...$（如 $x^2+2x+1=0$、$\frac{a}{b}$），独立成行的公式用 $$...$$（如 $$y=\frac{1}{2}x$$），化学方程式用 $\ce{2H2 + O2 -> 2H2O}$。分数写 $\frac{分子}{分母}$、平方写 $x^2$、根号写 $\sqrt{x}$、角度/圆周率写 $\pi$、希腊字母写 $\alpha$ 等，绝不要退化成 x^2、1/2、sqrt(x) 这样的纯文本。JSON 字符串里的反斜杠必须转义为 \\\\(如 \\\\frac)。\n\n必须只输出一个 JSON 对象（不要输出数组、不要加解释文字），字段：\n{"questions":[{"num":"题号","type":"题型","objective":true或false,"question":"题目内容","fullScore":数字,"answer":"标准答案（客观题必填）","points":"得分点（主观题，分点）"}]}\n'+(extraHint?('\n【补充说明】'+extraHint+'\n'):'')+'\n试卷内容：\n'+rawText.slice(0, 12000);
-  const content = await callAI([{role:'system',content:sys},{role:'user',content:user}],{json:true});
-  const arr = extractQuestionArray(parseAIJson(content));
-  if(!arr || !arr.length) throw new Error('AI 未返回题目数组。返回内容：' + String(content).slice(0, 300));
-  return arr.map(normalizePaperQuestion);
+/* ---------- 解析规则 ---------- */
+// 小问合并：这是解析里最容易出错的地方。模型天然喜欢把 (1)(2)(3) 当成三道题，
+// 结果「一道题变成四道题」，阅卷时和平台上的题对不上。规则 + 本地兜底双保险。
+const PAPER_SUBQ_RULE = ''
++ '\n【最重要：一道题下的多个小问必须合并成一条，绝不能拆成多题】\n'
++ '- 某道大题下面带 (1)(2)(3)、①②③、Ⅰ Ⅱ Ⅲ、a) b) c) 等小问，或写着「阅读下面的材料，完成下列各题」「回答下列问题」「根据上述材料」，那么**整道大题只输出一条记录**。\n'
++ '- num 只用大题号（如 "18"），不要写 "18(1)"、"18-1" 这种；parent 也填大题号 "18"。\n'
++ '- question 保留完整题干 + 全部小问原文，每个小问单独一行、保留 (1)(2)(3) 编号，不许省略小问内容。\n'
++ '- answer 覆盖所有小问的答案，按 (1)(2)(3) 分行写；points 按小问分点列出，并标明每个小问的分值。\n'
++ '- fullScore 填这道大题的总分（各小问分值之和），不是某一小问的分值。\n'
++ '- subs 可选：把小问结构化列出 [{"no":"(1)","text":"小问题干","answer":"小问答案","score":4}]。\n'
++ '- 只有彼此独立、各自有独立题号（17、18、19 连续编号且内容无关）的才拆成多条。\n'
++ '- 拿不准就合并：拆错会导致判分错乱，合并多一点只影响区分度。\n';
+
+const PAPER_FORMULA_RULE = ''
++ '\n【公式必须用 LaTeX，这是硬性要求】题目、答案、得分点中出现的所有数学 / 化学公式和符号，一律用 LaTeX 书写并加定界符：行内公式用 $...$（如 $x^2+2x+1=0$、$\\frac{a}{b}$），独立成行的公式用 $$...$$（如 $$y=\\frac{1}{2}x$$），化学方程式用 $\\ce{2H2 + O2 -> 2H2O}$。分数写 $\\frac{分子}{分母}$、平方写 $x^2$、根号写 $\\sqrt{x}$、角度 / 圆周率写 $\\pi$、希腊字母写 $\\alpha$，绝不要退化成 x^2、1/2、sqrt(x) 这种纯文本。JSON 字符串里的反斜杠必须转义为 \\\\(如 \\\\frac)。\n';
+
+const PAPER_SCHEMA = ''
++ '\n必须只输出一个 JSON 对象（不要输出数组、不要加解释文字），字段：\n'
++ '{"questions":[{"num":"大题号","parent":"大题号","type":"题型","objective":true或false,"question":"完整题干 + 全部小问原文","fullScore":数字,"answer":"覆盖各小问的答案","points":"按小问分点的得分点","subs":[{"no":"(1)","text":"小问","answer":"答案","score":4}]}]}\n';
+
+// 长文档按题号行切块：一次塞 12000 字符会被模型截断，后面的答案直接丢掉
+function splitPaperChunks(text, limit){
+  const lines = String(text || '').split(/\r?\n/);
+  const isHead = (l) => /^\s*(?:第\s*)?\d{1,3}\s*(?:题\s*)?[．.、)）]/.test(l);
+  const chunks = [];
+  let buf = [], len = 0;
+  for(const line of lines){
+    if(len && (len + line.length) > limit && isHead(line)){
+      chunks.push(buf.join('\n'));
+      buf = []; len = 0;
+    }
+    buf.push(line); len += line.length + 1;
+  }
+  if(buf.length) chunks.push(buf.join('\n'));
+  return chunks.length ? chunks : [''];
+}
+
+// 将试卷文字交给 AI，识别题目（客观 / 主观）、答案、得分点
+// extraHint：额外说明（如「多个文件分别可能是题目与答案解析」）
+// onProgress：分段解析时的进度回调 (当前段, 总段数)
+async function parseExamPaper(rawText, extraHint, onProgress){
+  const sys = '你是一位经验丰富的教研员，擅长解析试卷结构，非常清楚一道大题下面的 (1)(2)(3) 小问属于同一道题。';
+  const chunks = splitPaperChunks(rawText, 6000);
+  const all = [];
+  for(let i=0;i<chunks.length;i++){
+    if(onProgress) onProgress(i+1, chunks.length);
+    const user = '请解析下面这份试卷 / 答案解析，识别其中所有题目。对每道题输出：题号、题型（客观题：单选 / 多选 / 填空 / 判断；主观题：简答 / 计算 / 论述 / 作文等）、题目内容、满分、标准答案（客观题必须有明确答案）、得分点（主观题分点列出）。\n'
+      + PAPER_SUBQ_RULE + PAPER_FORMULA_RULE + PAPER_SCHEMA
+      + (extraHint ? ('\n【补充说明】' + extraHint + '\n') : '')
+      + (chunks.length > 1 ? ('\n【本次只提供整份文档的第 ' + (i+1) + ' / ' + chunks.length + ' 段，只解析本段内出现的题目，不要编造其它段的内容】\n') : '')
+      + '\n试卷内容：\n' + chunks[i];
+    const content = await callAI([{role:'system',content:sys},{role:'user',content:user}],{json:true});
+    const arr = extractQuestionArray(parseAIJson(content));
+    if(!arr || !arr.length){
+      if(chunks.length === 1) throw new Error('AI 未返回题目数组。返回内容：' + String(content).slice(0, 300));
+      continue;   // 某段里没有题目（纯答案页、页眉等）就跳过，不影响其它段
+    }
+    all.push.apply(all, arr);
+  }
+  if(!all.length) throw new Error('AI 未返回题目数组，请确认文档包含题干');
+  return mergePaperQuestions(all.map(normalizePaperQuestion));
 }
 function normalizePaperQuestion(q, i){
   const o = q || {};
+  const subs = Array.isArray(o.subs) ? o.subs : null;
   return {
     id: uid(),
     num: o.num || String((i||0)+1),
+    parent: o.parent || '',
     type: o.type || '主观题',
     objective: parseBool(o.objective),
     question: o.question || '',
@@ -1185,19 +1268,112 @@ function normalizePaperQuestion(q, i){
     answer: o.answer || '',
     reference: o.answer || o.reference || '',
     points: o.points || '',
+    subs: subs,
     wrong: o.wrong || '',
     note: o.note || ''
   };
 }
-// 图片版：题目/答案直接拍照上传，走视觉模型识别（不依赖 PDF 文字层）
-async function parseExamPaperVision(images){
-  const sys = '你是一位经验丰富的教研员，擅长解析试卷结构。';
-  const user = '请从下面的题目/答案图片中识别题目信息：题号、题型（客观题：单选/多选/填空/判断；主观题：简答/计算/论述/作文等）、题目内容、满分、标准答案、得分点。\n\n【公式必须用 LaTeX】行内 $...$、独立 $$...$$，化学方程式用 $\\ce{2H2 + O2 -> 2H2O}$，不要写成 x^2、1/2 这类纯文本。JSON 字符串里的反斜杠必须转义为 \\\\。\n\n只输出一个 JSON 对象：\n{"questions":[{"num":"题号","type":"题型","objective":true或false,"question":"题目内容","fullScore":数字,"answer":"标准答案","points":"得分点"}]}';
-  const content = [{type:'text', text:user}].concat(images.map(u=>({type:'image_url', image_url:{url:u}})));
-  const raw = await callAI([{role:'system',content:sys},{role:'user',content:content}],{json:true});
-  const arr = extractQuestionArray(parseAIJson(raw));
-  if(!arr || !arr.length) return [];
-  return arr.map(normalizePaperQuestion);
+
+/* ---------- 小问合并兜底：模型仍拆散时，本地按大题号合回去 ---------- */
+// 18(1) / 18-1 / 18.1 / 第18题 / 18 → "18"
+function parentNumOf(num){
+  const s = String(num == null ? '' : num).trim();
+  let m = s.match(/^(?:第\s*)?(\d{1,3})\s*题\s*$/);          // 第18题 / 18题
+  if(m) return m[1];
+  m = s.match(/^(?:第\s*)?(\d{1,3})\s*(?:题)?\s*(?:[（(\[【]|[-－—.．、])/);
+  if(m) return m[1];
+  m = s.match(/^(\d{1,3})$/);
+  return m ? m[1] : '';
+}
+// 是否小问号：带子编号（(1)、-1、.1）
+function isSubNum(num){
+  const s = String(num == null ? '' : num).trim();
+  if(/[（(]\s*\d{1,2}\s*[）)]/.test(s)) return true;
+  return /^第?\s*\d{1,3}\s*[-－—.．]\s*\d{1,2}$/.test(s);
+}
+// 去重拼接：同一段文字（忽略空白差异）只保留一份
+function joinUniqueText(list, sep){
+  const seen = new Set(), out = [];
+  for(const raw of list){
+    const t = String(raw == null ? '' : raw).trim();
+    if(!t) continue;
+    const k = t.replace(/\s+/g, '');
+    if(seen.has(k)) continue;
+    seen.add(k); out.push(t);
+  }
+  return out.join(sep || '\n');
+}
+function mergePaperQuestions(list){
+  const arr = (list || []).filter(Boolean);
+  if(arr.length < 2) return arr;
+  const groups = new Map(), order = [];
+  arr.forEach((q, i) => {
+    // parent 也可能被模型填成小问号（"18(1)"），同样归一化到大题号
+    let key = parentNumOf(q.parent) || parentNumOf(q.num);
+    if(!key) key = '__' + i;          // 没有题号就无法判断归属，原样保留
+    if(!groups.has(key)){ groups.set(key, []); order.push(key); }
+    groups.get(key).push(q);
+  });
+  const out = [];
+  for(const key of order){
+    const items = groups.get(key);
+    if(items.length === 1){ out.push(items[0]); continue; }
+    // 基座优先取「题号正好是大题号」的那条（题干完整），否则用第一条改造
+    let baseIdx = -1;
+    items.forEach((q, i) => { if(baseIdx < 0 && !isSubNum(q.num) && String(q.num).trim() === key) baseIdx = i; });
+    if(baseIdx < 0) baseIdx = 0;
+    const base = Object.assign({}, items[baseIdx]);
+    const rest = items.filter((q, i) => i !== baseIdx);
+    if(!/^\d+$/.test(String(base.num).trim()) && /^\d+$/.test(key)) base.num = key;   // 全是小问：题号归到大题号
+    base.question = joinUniqueText([base.question].concat(rest.map(q => q.question)));
+    base.text = base.question;
+    base.answer = joinUniqueText([base.answer].concat(rest.map(q => q.answer)));
+    base.reference = base.answer;
+    base.points = joinUniqueText([base.points].concat(rest.map(q => q.points)));
+    base.wrong = joinUniqueText([base.wrong].concat(rest.map(q => q.wrong)));
+    base.note = joinUniqueText([base.note].concat(rest.map(q => q.note)));
+    const subs = [];
+    [base].concat(rest).forEach(q => { if(Array.isArray(q.subs)) q.subs.forEach(s => subs.push(s)); });
+    if(subs.length) base.subs = subs;
+    // 分值：全是小问就求和（各小问分值相加）；否则取最大（避免「题干一条 + 答案一条」被翻倍）
+    const scores = items.map(q => Number(q.fullScore) || 0).filter(n => n > 0);
+    if(scores.length){
+      base.fullScore = items.every(q => isSubNum(q.num))
+        ? scores.reduce((a, b) => a + b, 0)
+        : Math.max.apply(null, scores);
+    }
+    if(!base.type || base.type === '主观题'){
+      const t = rest.map(q => q.type).filter(Boolean)[0];
+      if(t) base.type = t;
+    }
+    if(rest.some(q => !q.objective)) base.objective = false;
+    base.mergedCount = items.length;
+    out.push(base);
+  }
+  return out;
+}
+
+// 图片版：题目 / 答案直接拍照或扫描件（PDF 转图）上传，走视觉模型识别，不依赖文字层
+// 模型单次能看的图有限，按 4 张一批送，结果再合并
+async function parseExamPaperVision(images, extraHint, onProgress){
+  const sys = '你是一位经验丰富的教研员，擅长从题目和答案的照片中解析试卷结构，非常清楚一道大题下面的 (1)(2)(3) 小问属于同一道题。';
+  const list = (images || []).filter(Boolean);
+  if(!list.length) return [];
+  const batches = [];
+  for(let i=0;i<list.length;i+=4) batches.push(list.slice(i, i+4));
+  const all = [];
+  for(let b=0;b<batches.length;b++){
+    if(onProgress) onProgress(b+1, batches.length);
+    const user = '请从下面的题目 / 答案图片中识别题目信息：题号、题型（客观题：单选 / 多选 / 填空 / 判断；主观题：简答 / 计算 / 论述 / 作文等）、题目内容、满分、标准答案、得分点。图片可能是题目页，也可能是答案解析页。\n'
+      + PAPER_SUBQ_RULE + PAPER_FORMULA_RULE + PAPER_SCHEMA
+      + (extraHint ? ('\n【补充说明】' + extraHint + '\n') : '')
+      + (batches.length > 1 ? ('\n【这是第 ' + (b+1) + ' / ' + batches.length + ' 组图片，只识别这几张里出现的题目】\n') : '');
+    const content = [{type:'text', text:user}].concat(batches[b].map(u=>({type:'image_url', image_url:{url:u}})));
+    const raw = await callAI([{role:'system',content:sys},{role:'user',content:content}],{json:true});
+    const arr = extractQuestionArray(parseAIJson(raw));
+    if(arr && arr.length) all.push.apply(all, arr);
+  }
+  return mergePaperQuestions(all.map(normalizePaperQuestion));
 }
 /* ================= 浏览器阅卷：题目 / 答案文档 → 评分标准 ================= */
 // 老师手上通常是一份题目文档 + 一份答案解析，或直接拍两页照片。这里把它们读成文字/图片，
@@ -1219,7 +1395,9 @@ function brDocsSync(){
   }
   box.style.display = '';
   box.innerHTML = brDocs.map((d,i)=>{
-    const meta = d.kind === 'image' ? '图片' : ((d.text ? d.text.length : 0) + ' 字符');
+    const meta = d.kind === 'image'
+      ? '图片（大模型识别）'
+      : ((d.text && d.text.trim()) ? ((d.text.length) + ' 字符') : (d.isPdf ? 'PDF 无文字层（将用大模型看图）' : '0 字符'));
     return '<div>📄 ' + esc(d.name) + ' <span style="color:var(--muted)">· ' + meta + '</span> <a href="javascript:void 0" data-brdoc="' + i + '" style="color:var(--red)">移除</a></div>';
   }).join('');
   box.querySelectorAll('a[data-brdoc]').forEach(a=>{
@@ -1228,7 +1406,11 @@ function brDocsSync(){
   $('#brParseDocs').style.display = '';
   $('#brDocsClear').style.display = '';
   const chars = brDocs.reduce((n,d)=>n+(d.text?d.text.length:0),0);
-  info.textContent = '已载入 ' + brDocs.length + ' 个文件' + (chars ? ('，共 ' + chars + ' 字符') : '') + '，点「解析为评分标准」';
+  const imgs = brDocs.filter(d=>d.kind === 'image').length;
+  info.textContent = '已载入 ' + brDocs.length + ' 个文件'
+    + (chars ? ('，文字 ' + chars + ' 字符') : '')
+    + (imgs ? ('，图片 ' + imgs + ' 张') : '')
+    + '，点「解析为评分标准」';
 }
 
 async function onPickBrDocs(e){
@@ -1247,9 +1429,19 @@ async function onPickBrDocs(e){
         brDocs.push({ name: f.name, kind: 'image', dataUrl: small });
       } else {
         info.textContent = '正在解析文字：' + f.name;
-        const txt = await extractFileText(f);
-        if(!txt || !txt.trim()){ toast(f.name + ' 未提取到文字，扫描版 PDF 建议改为拍照上传','err'); continue; }
-        brDocs.push({ name: f.name, kind: 'text', text: txt });
+        const isPdf = /\.pdf$/i.test(lname);
+        let txt = '';
+        try { txt = await extractFileText(f); } catch(err){
+          if(!isPdf) throw err;
+          txt = '';
+        }
+        const pages = isPdf ? (f.__pdfPages || 0) : 0;
+        if((!txt || !txt.trim()) && !isPdf){
+          toast(f.name + ' 未提取到文字（可能是图片版），请改为拍照上传', 'err');
+          continue;
+        }
+        // 扫描版 PDF 文字层为空，但保留 File 引用，解析时再转成大模型看图
+        brDocs.push({ name: f.name, kind: 'text', text: txt || '', file: f, isPdf: isPdf, pages: pages });
       }
     }catch(err){
       toast('读取失败：' + f.name + ' · ' + err.message, 'err');
@@ -1287,38 +1479,92 @@ async function onParseBrDocs(){
   if(!brDocs.length){ toast('请先上传题目 / 答案文档','err'); return; }
   if(brDocParsing) return;
   const btn = $('#brParseDocs'), info = $('#brDocsInfo');
+  const engine = (($('#brDocEngine') || {}).value) || 'auto';   // auto / vision / text
+  const logW = (m) => { try { if(typeof brLog === 'function') brLog(m, 'w'); } catch(_){} };
   brDocParsing = true; btn.disabled = true; btn.textContent = '⏳ 解析中…';
   info.textContent = 'AI 正在识别题目、参考答案与得分点…';
   try{
-    const texts = brDocs.filter(d=>d.kind === 'text');
-    const imgs = brDocs.filter(d=>d.kind === 'image').slice(0, 4);
-    let questions = [];
-    if(texts.length){
-      const merged = texts.map(d=>'【文件：' + d.name + '】\n' + d.text).join('\n\n');
-      const hint = texts.length > 1
-        ? '以上可能包含「题目」与「答案解析」等不同文件，请把同一道题的题干与答案合并成一条，不要重复拆成多题。'
-        : '';
-      questions = await parseExamPaper(merged, hint);
-    }
-    if(imgs.length){
-      let more = [];
+    /* ---- 1. 决定每个文件走「本地文字」还是「大模型看图」---- */
+    const textDocs = brDocs.filter(d => d.kind === 'text');
+    const visionImgs = brDocs.filter(d => d.kind === 'image').map(d => d.dataUrl);
+    const useText = [];
+    let pdfPagesToVision = 0, pdfFallbackMsg = '';
+    for(const d of textDocs){
+      const plain = String(d.text || '').replace(/\s/g, '').length;
+      const pages = d.pages || 1;
+      const thin = plain < 60 * pages;            // 页均不足 60 字 → 基本是扫描件
+      const wantVision = !!d.isPdf && (engine === 'vision' || (engine === 'auto' && thin));
+      if(!wantVision){ useText.push(d); continue; }
       try{
-        more = await parseExamPaperVision(imgs.map(d=>d.dataUrl));
+        info.textContent = '正在把 PDF 转成图片交给大模型识别：' + d.name;
+        const r = await renderPdfPages(d.file, 8);
+        r.pages.forEach(p => visionImgs.push(p.dataUrl));
+        pdfPagesToVision += r.pages.length;
+        if(r.total > r.pages.length) logW('⚠ ' + d.name + ' 共 ' + r.total + ' 页，本次只识别前 ' + r.pages.length + ' 页');
+      }catch(err){
+        if(plain > 0){ useText.push(d); pdfFallbackMsg = err.message; }
+        else throw new Error(d.name + ' 无法转成图片：' + err.message);
+      }
+    }
+    if(pdfFallbackMsg) info.textContent = '⚠ PDF 转图片失败，已改用文字层：' + pdfFallbackMsg;
+
+    // 视觉单次 4 张、总数上限 12 张，避免请求体过大被服务商拒绝
+    if(visionImgs.length > 12){
+      logW('⚠ 待识别图片 ' + visionImgs.length + ' 张，本次只取前 12 张');
+      visionImgs.length = 12;
+    }
+
+    /* ---- 2. 补充说明：多文件 / 文字与图片并存时，都要求同题合并 ---- */
+    const parts = [];
+    if(useText.length > 1) parts.push('以上包含多个文件，可能分别是「题目」与「答案解析」，请把同一道题的题干与答案合并成一条。');
+    if(visionImgs.length && useText.length) parts.push('此外还提供了同一份试卷的图片，图片与文字可能是同一批题的不同部分：同一题号只保留一条，不要重复输出。');
+    const hintText = parts.join('');
+    const hintVision = (visionImgs.length && useText.length)
+      ? '文字部分已经解析过同一批题目，这里只识别图片中新出现的题号；与文字重复的题号不要重复输出。'
+      : hintText;
+
+    /* ---- 3. 文字解析 ---- */
+    let questions = [];
+    if(useText.length){
+      const merged = useText.map(d => '【文件：' + d.name + '】\n' + d.text).join('\n\n');
+      questions = await parseExamPaper(merged, hintText, (i, n) => {
+        info.textContent = n > 1 ? ('AI 正在解析文字（第 ' + i + '/' + n + ' 段）…') : 'AI 正在解析文字内容…';
+      });
+    }
+
+    /* ---- 4. 大模型看图（图片 / 扫描件 PDF）---- */
+    if(visionImgs.length){
+      info.textContent = 'AI 正在看图识别（共 ' + visionImgs.length + ' 张）…';
+      try{
+        const more = await parseExamPaperVision(visionImgs, hintVision, (i, n) => {
+          info.textContent = 'AI 正在看图识别（第 ' + i + '/' + n + ' 组，共 ' + visionImgs.length + ' 张）…';
+        });
+        questions = questions.concat(more);
       }catch(e){
         const m = String(e && e.message || e);
-        if(!questions.length) throw new Error('图片解析失败：' + m + '（若当前模型不支持图片识别，请改传 Word / PDF）');
-        info.textContent = '⚠ 图片解析失败，已忽略：' + m;
+        if(!questions.length) throw new Error('图片识别失败：' + m + '（若当前模型不支持图片，请改传 Word / PDF，或在设置里换成支持视觉的模型）');
+        info.textContent = '⚠ 图片识别失败，已只用文字结果：' + m;
       }
-      questions = questions.concat(more);
     }
+
+    /* ---- 5. 文字 + 图片两路结果再合并一次（同题号）---- */
+    questions = mergePaperQuestions(questions);
     if(!questions.length) throw new Error('没有识别到题目，请确认文档中含题干与答案');
+
     brDocQuestions = questions;
     const sel = $('#brDocsQ');
-    sel.innerHTML = questions.map((q,i)=>'<option value="' + i + '">第 ' + esc(q.num || (i+1)) + ' 题 · ' + esc(q.type || '主观题') + ' · 满分 ' + (q.fullScore || '?') + ' · ' + esc(String(q.question || '').slice(0,26)) + '</option>').join('');
+    sel.innerHTML = questions.map((q,i)=>{
+      const sub = (q.subs && q.subs.length) ? (' · ' + q.subs.length + ' 小问') : '';
+      return '<option value="' + i + '">第 ' + esc(q.num || (i+1)) + ' 题 · ' + esc(q.type || '主观题') + ' · 满分 ' + (q.fullScore || '?') + sub + ' · ' + esc(String(q.question || '').slice(0,26)) + '</option>';
+    }).join('');
     $('#brDocsPick').style.display = questions.length > 1 ? '' : 'none';
     sel.onchange = () => applyBrDocQuestion(Number(sel.value));
     applyBrDocQuestion(0);
-    info.textContent = '✅ 识别到 ' + questions.length + ' 道题，已填入第 1 题' + (questions.length > 1 ? '，可在下拉切换' : '') + '；若与平台当前题不符请手动调整';
+    const mergedSub = questions.reduce((n,q)=>n + (q.subs && q.subs.length ? 1 : 0), 0);
+    const mode = visionImgs.length ? (useText.length ? '文字 + 大模型看图' : '大模型看图') : '本地文字 + 大模型解析';
+    info.textContent = '✅ ' + mode + '：识别到 ' + questions.length + ' 道题'
+      + (mergedSub ? ('（其中 ' + mergedSub + ' 道含多小问，已合并）') : '')
+      + '，已填入第 1 题' + (questions.length > 1 ? '，可在下拉切换' : '') + '；若与平台当前题不符请手动调整';
     toast('已解析 ' + questions.length + ' 道题并填入评分标准', 'ok');
   }catch(err){
     info.textContent = '解析失败：' + err.message;
@@ -2412,6 +2658,12 @@ function bindBrowserEvents(){
   $('#brDocsInput').onchange = onPickBrDocs;
   $('#brParseDocs').onclick = onParseBrDocs;
   $('#brDocsClear').onclick = () => { brDocs.length = 0; brDocQuestions = []; brDocsSync(); };
+  // 识别方式记忆：老师惯用一种就一直用同一种，不用每次重选
+  const eng = $('#brDocEngine');
+  if(eng){
+    eng.value = state.settings.brDocEngine || 'auto';
+    eng.onchange = () => { state.settings.brDocEngine = eng.value; save('settings', state.settings); };
+  }
 }
 
 let brPreviewOn = false;
