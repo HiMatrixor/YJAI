@@ -32,21 +32,25 @@ autoUpdater.logger = null;
    —— electron-updater 的 github provider 正是要下这个文件，所以客户端一直「检查更新失败」。
    改成 generic provider + 逐个探测镜像，挑第一个能拿到 latest.yml 的源。 */
 const GH_LATEST = 'https://github.com/HiMatrixor/YJAI/releases/latest/download';
+// 这些公益镜像可用性波动很大（2026-11-17 实测：gh-proxy.com 一度 DNS 直接失败，
+// 而 ghfile.geekertao.top / ghproxy.net 正常），所以宁可多列几个、并行探测。
 const UPDATE_MIRRORS = [
   'https://gh-proxy.com/' + GH_LATEST,
   'https://ghproxy.net/' + GH_LATEST,
+  'https://ghfile.geekertao.top/' + GH_LATEST,
+  'https://ghfast.top/' + GH_LATEST,
   'https://gh.llkk.cc/' + GH_LATEST,
   'https://ghp.ci/' + GH_LATEST,
   GH_LATEST
 ];
 let feedPicked = '';
 
-function probeFeed(base) {
+function probeFeed(base, ms) {
   return new Promise((resolve) => {
     let done = false;
     const finish = (v) => { if (!done) { done = true; resolve(v); } };
     const ctrl = new AbortController();
-    const to = setTimeout(() => { try { ctrl.abort(); } catch (_) {} finish(false); }, 4000);
+    const to = setTimeout(() => { try { ctrl.abort(); } catch (_) {} finish(false); }, ms || 3000);
     fetch(base + '/latest.yml', { signal: ctrl.signal, redirect: 'follow', cache: 'no-store' })
       .then(async (r) => {
         if (!r.ok) return finish(false);
@@ -57,13 +61,14 @@ function probeFeed(base) {
       .finally(() => clearTimeout(to));
   });
 }
+// 并行探测：总耗时 = 最慢的那个（3 秒上限），不再一个个串行等到天荒地老
 async function pickFeed(force) {
   if (feedPicked && !force) return feedPicked;
-  for (const m of UPDATE_MIRRORS) {
-    if (await probeFeed(m)) { feedPicked = m; return m; }
-  }
   feedPicked = '';
-  return '';
+  const flags = await Promise.all(UPDATE_MIRRORS.map(m => probeFeed(m, 3000)));
+  const idx = flags.findIndex(Boolean);
+  if (idx >= 0) feedPicked = UPDATE_MIRRORS[idx];
+  return feedPicked;
 }
 // 统一入口：选源 → setFeedURL → checkForUpdates
 async function runUpdateCheck(forceFeed) {
@@ -137,10 +142,13 @@ ipcMain.handle('update:manual', async () => {
       const ex = (j && j.assets || []).find(a => /\.exe$/i.test(a.name || ''));
       if (ex) name = ex.name;
     } catch (_) {}
-    const base = feedPicked || UPDATE_MIRRORS[0];
-    const url = name ? (base + '/' + name) : (base + '/latest.yml');
+    // 现探一次可用镜像，避免打开一个已经挂掉的链接
+    const base = await pickFeed(true);
+    const url = base
+      ? (name ? base + '/' + name : base + '/latest.yml')
+      : ('https://github.com/HiMatrixor/YJAI/releases/latest/download/' + (name || ''));
     shell.openExternal(url);
-    return { ok: true, url: url };
+    return { ok: true, url: url, mirrored: !!base };
   } catch (e) { return { error: String(e.message || e) }; }
 });
 

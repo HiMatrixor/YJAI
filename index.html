@@ -3905,7 +3905,11 @@ function bindEvents(){
     if(!(window.YJAI&&YJAI.manualDownload)){ updateStatusText('❌ 当前版本不支持手动下载，请到 GitHub Releases 页获取'); return; }
     updateStatusText('正在打开下载链接…');
     const r=await YJAI.manualDownload();
-    if(r&&r.ok) updateStatusText('✅ 已在浏览器打开下载链接，下载完成后手动安装即可');
+    if(r&&r.ok){
+      updateStatusText(r.mirrored===false
+        ? '⚠ 暂时没有可用镜像，已打开 GitHub 原链（国内可能打不开，可稍后重试或挂代理）'
+        : '✅ 已在浏览器打开下载链接（镜像），下载完成后手动安装即可');
+    }
     else updateStatusText('❌ '+((r&&r.error)||'打开下载链接失败'));
   };
   $('#tplList').addEventListener('click',e=>{
