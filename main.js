@@ -1,9 +1,11 @@
-const { app, BrowserWindow, shell, Menu, ipcMain, webContents } = require('electron');
+const { app, BrowserWindow, shell, Menu, ipcMain, webContents, session } = require('electron');
 const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
 const { execSync } = require('child_process');
-const { autoUpdater } = require('electron-updater');
+const fs = require('node:fs');
+const https = require('node:https');
+const httpMod = require('node:http');
 
 let mainWin = null;
 let browserWin = null;
@@ -20,66 +22,176 @@ process.on('uncaughtException', (err) => {
   // 静默：不打断用户操作
 });
 
-/* ============ 自动更新 ============ */
-// 仅在打包后的环境中启用（开发环境 require 不到 app-update.yml 时会静默跳过）
-autoUpdater.autoDownload = false;   // 先检查，让用户确认后再下载
-autoUpdater.autoInstallOnAppQuit = true;
-autoUpdater.logger = null;
+/* ============ 自动更新（自实现，双通道） ============ */
+/*
+   为什么弃用 electron-updater：
+   1) 它用 Electron 的 net 模块（Chromium 网络栈）发请求，严格遵循系统代理。
+      本机实测系统代理 127.0.0.1:7892 在运行，但对 github 下载域名直接拒绝连接，
+      于是客户端永远只看到 net::ERR_CONNECTION_REFUSED，看起来像「GitHub 不可达」。
+   2) 它必须严格按 latest.yml 的 feed 下载，镜像 302 跳转或响应慢一点就直接判失败。
 
-/* ---------- 更新源：github.com 资产域名在国内常被重置，改走多镜像 ----------
-   实测（2026-11-10 本机）：api.github.com 正常 200，但
-   https://github.com/HiMatrixor/YJAI/releases/latest/download/latest.yml 直接 fetch failed
-   —— electron-updater 的 github provider 正是要下这个文件，所以客户端一直「检查更新失败」。
-   改成 generic provider + 逐个探测镜像，挑第一个能拿到 latest.yml 的源。 */
+   现在改成双通道（2026-11-17 本机实测数据）：
+     通道A  系统代理 + GitHub 官方 CDN：手写 CONNECT 隧道，实测 0.91MB/s，82MB ≈ 90 秒
+     通道B  公益镜像直连：每个连接被限速，实测 0.10~0.20MB/s，82MB 要 7~10 分钟
+     通道C  手动下载：前两者都挂时，用浏览器打开镜像链接
+   A 优先，失败自动降级到 B，进度全程可见。
+*/
 const GH_LATEST = 'https://github.com/HiMatrixor/YJAI/releases/latest/download';
-// 这些公益镜像可用性波动很大（2026-11-17 实测：gh-proxy.com 一度 DNS 直接失败，
-// 而 ghfile.geekertao.top / ghproxy.net 正常），所以宁可多列几个、并行探测。
 const UPDATE_MIRRORS = [
-  'https://gh-proxy.com/' + GH_LATEST,
+  'https://gh-proxy.net/' + GH_LATEST,
   'https://ghproxy.net/' + GH_LATEST,
   'https://ghfile.geekertao.top/' + GH_LATEST,
-  'https://ghfast.top/' + GH_LATEST,
-  'https://gh.llkk.cc/' + GH_LATEST,
-  'https://ghp.ci/' + GH_LATEST,
   GH_LATEST
 ];
-let feedPicked = '';
 
-function probeFeed(base, ms) {
+/* ---------- 系统代理（Windows 上由 Clash / v2ray 等设置） ---------- */
+let proxyCache;   // undefined=未探测，null=无代理，{host,port}=有代理
+async function getSystemProxy() {
+  if (proxyCache !== undefined) return proxyCache;
+  try {
+    const r = await session.defaultSession.resolveProxy('https://github.com');
+    // 形如 "PROXY 127.0.0.1:7892;DIRECT" / "DIRECT"
+    const m = /PROXY\s+([^;\s]+)/i.exec(String(r || ''));
+    if (m) {
+      const s = m[1];
+      const i = s.lastIndexOf(':');
+      const host = i > 0 ? s.slice(0, i) : s;
+      const port = parseInt(i > 0 ? s.slice(i + 1) : '80', 10) || 80;
+      if (host && port) { proxyCache = { host, port }; return proxyCache; }
+    }
+  } catch (_) {}
+  proxyCache = null;
+  return null;
+}
+
+/* ---------- 统一请求：直连或经代理，自动跟随重定向 ---------- */
+function openStream(rawUrl, opts, proxy, redirectLeft) {
   return new Promise((resolve) => {
-    let done = false;
-    const finish = (v) => { if (!done) { done = true; resolve(v); } };
-    const ctrl = new AbortController();
-    const to = setTimeout(() => { try { ctrl.abort(); } catch (_) {} finish(false); }, ms || 3000);
-    fetch(base + '/latest.yml', { signal: ctrl.signal, redirect: 'follow', cache: 'no-store' })
-      .then(async (r) => {
-        if (!r.ok) return finish(false);
-        const t = await r.text();
-        finish(/^version:\s*\d/m.test(t));
-      })
-      .catch(() => finish(false))
-      .finally(() => clearTimeout(to));
+    let u;
+    try { u = new URL(rawUrl); } catch (_) { return resolve({ err: '地址无效' }); }
+    const isHttps = u.protocol === 'https:';
+    const mod = isHttps ? https : httpMod;
+    const headers = Object.assign({ 'User-Agent': 'YJAI-Updater/3', 'Accept': '*/*' }, opts.headers || {});
+    const idleTimeout = opts.timeout || 20000;
+
+    const handle = (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectLeft > 0) {
+        res.resume();
+        let next;
+        try { next = new URL(res.headers.location, rawUrl).href; } catch (_) { return resolve({ err: '重定向地址无效' }); }
+        return openStream(next, opts, proxy, redirectLeft - 1).then(resolve);
+      }
+      resolve({ status: res.statusCode, headers: res.headers, stream: res });
+    };
+
+    const doDirect = () => {
+      const req = mod.request({
+        host: u.hostname,
+        port: u.port || (isHttps ? 443 : 80),
+        path: u.pathname + u.search,
+        method: opts.method || 'GET',
+        headers: Object.assign({}, headers, { Host: u.hostname }),
+        servername: isHttps ? u.hostname : undefined
+      }, handle);
+      req.setTimeout(idleTimeout, () => { try { req.destroy(); } catch (_) {} resolve({ err: '连接超时' }); });
+      req.on('error', (e) => resolve({ err: (e && e.code) || '网络错误' }));
+      req.end();
+    };
+
+    if (proxy && proxy.host && isHttps && !opts.noProxy) {
+      let cr;
+      try {
+        cr = httpMod.request({ host: proxy.host, port: proxy.port, method: 'CONNECT', path: u.hostname + ':443', timeout: idleTimeout });
+      } catch (_) { return doDirect(); }
+      cr.on('connect', (r, socket) => {
+        if (r.statusCode !== 200) {
+          try { socket.destroy(); } catch (_) {}
+          return doDirect();   // 代理拒绝该域名 → 退回直连
+        }
+        const req = https.request({
+          host: u.hostname, servername: u.hostname,
+          path: u.pathname + u.search, method: opts.method || 'GET',
+          headers, socket, agent: false, createConnection: () => socket
+        }, handle);
+        req.setTimeout(idleTimeout, () => { try { req.destroy(); } catch (_) {} resolve({ err: '连接超时' }); });
+        req.on('error', (e) => resolve({ err: (e && e.code) || '网络错误' }));
+        req.end();
+      });
+      cr.on('timeout', () => { try { cr.destroy(); } catch (_) {} doDirect(); });
+      cr.on('error', () => { try { cr.destroy(); } catch (_) {} doDirect(); });
+      cr.end();
+    } else {
+      doDirect();
+    }
   });
 }
-// 并行探测：总耗时 = 最慢的那个（3 秒上限），不再一个个串行等到天荒地老
-async function pickFeed(force) {
-  if (feedPicked && !force) return feedPicked;
-  feedPicked = '';
-  const flags = await Promise.all(UPDATE_MIRRORS.map(m => probeFeed(m, 3000)));
-  const idx = flags.findIndex(Boolean);
-  if (idx >= 0) feedPicked = UPDATE_MIRRORS[idx];
-  return feedPicked;
-}
-// 统一入口：选源 → setFeedURL → checkForUpdates
-async function runUpdateCheck(forceFeed) {
-  const url = await pickFeed(!!forceFeed);
-  if (!url) {
-    sendUpdate('update:status', { state: 'error', message: '连不上更新服务器（GitHub 直连与镜像均不可达），可点「手动下载」用浏览器获取安装包' });
-    return { error: '无法连接更新源' };
+
+async function httpText(url, { timeout = 10000, proxy = null, headers } = {}) {
+  const r = await openStream(url, { timeout, headers }, proxy, 6);
+  if (r.err) return { ok: false, error: r.err };
+  if (r.status !== 200 && r.status !== 206) {
+    r.stream.resume();
+    return { ok: false, status: r.status };
   }
-  try { autoUpdater.setFeedURL({ provider: 'generic', url }); } catch (_) {}
-  autoUpdater.checkForUpdates();
-  return { feed: url };
+  const text = await new Promise((resolve) => {
+    let b = '';
+    r.stream.setEncoding('utf8');
+    r.stream.on('data', (d) => { if (b.length < 262144) b += d; });
+    r.stream.on('end', () => resolve(b));
+    r.stream.on('error', () => resolve(b));
+  });
+  return { ok: true, status: r.status, text };
+}
+
+function parseLatestYml(t) {
+  return {
+    version: (t.match(/^version:\s*([^\s]+)/m) || [])[1] || '',
+    file: (t.match(/^path:\s*([^\s]+)/m) || [])[1] || '',
+    sha512: (t.match(/^\s*sha512:\s*([^\s]+)/m) || [])[1] || ''
+  };
+}
+
+function cmpVer(a, b) {
+  const pa = String(a || '0').split('.').map((x) => parseInt(x, 10) || 0);
+  const pb = String(b || '0').split('.').map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    const x = pa[i] || 0, y = pb[i] || 0;
+    if (x !== y) return x > y ? 1 : -1;
+  }
+  return 0;
+}
+
+/* 探测可用通道：有代理时先单独给它 5 秒优先窗口（实测 1~3 秒返回），
+   失败再并行探镜像。这样既快又不会被慢镜像拖住。 */
+async function pickFeed() {
+  const proxy = await getSystemProxy();
+  if (proxy) {
+    const got = await Promise.race([
+      httpText(GH_LATEST + '/latest.yml', { timeout: 6000, proxy }),
+      new Promise((res) => setTimeout(() => res(null), 5000))
+    ]);
+    if (got && got.ok && /^version:\s*\d/m.test(got.text || '')) {
+      const info = parseLatestYml(got.text);
+      if (info.version) return { base: GH_LATEST, info, proxy, label: '代理' };
+    }
+  }
+  const tasks = UPDATE_MIRRORS.map((base) => ({ base, proxy: null, label: '镜像' }));
+  return new Promise((resolve) => {
+    let pending = tasks.length, settled = false;
+    const finish = (v) => { if (!settled) { settled = true; resolve(v); } };
+    if (!tasks.length) return finish(null);
+    tasks.forEach((t) => {
+      httpText(t.base + '/latest.yml', { timeout: 10000, proxy: t.proxy })
+        .then((r) => {
+          if (!settled && r.ok && /^version:\s*\d/m.test(r.text || '')) {
+            const info = parseLatestYml(r.text);
+            if (info.version) return finish({ base: t.base, info, proxy: t.proxy, label: t.label });
+          }
+          if (--pending === 0) finish(null);
+        })
+        .catch(() => { if (--pending === 0) finish(null); });
+    });
+  });
 }
 
 function sendUpdate(channel, payload) {
@@ -88,65 +200,145 @@ function sendUpdate(channel, payload) {
   }
 }
 
-autoUpdater.on('checking-for-update', () => sendUpdate('update:status', { state: 'checking' }));
-autoUpdater.on('update-available', (info) => sendUpdate('update:status', { state: 'available', info }));
-autoUpdater.on('update-not-available', (info) => sendUpdate('update:status', { state: 'none', info }));
-autoUpdater.on('download-progress', (p) => sendUpdate('update:status', { state: 'downloading', percent: p.percent, transferred: p.transferred, total: p.total }));
-autoUpdater.on('update-downloaded', (info) => sendUpdate('update:status', { state: 'downloaded', info }));
+async function checkUpdate() {
+  sendUpdate('update:status', { state: 'checking' });
+  const pick = await pickFeed();
+  if (!pick) {
+    const msg = '连不上更新服务器：GitHub 直连与全部镜像均不可达。可点「手动下载」用浏览器获取安装包';
+    sendUpdate('update:status', { state: 'error', message: msg });
+    return { error: msg };
+  }
+  const cur = app.getVersion();
+  if (cmpVer(pick.info.version, cur) > 0) {
+    sendUpdate('update:status', { state: 'available', info: { version: pick.info.version }, mirror: pick.base, via: pick.label });
+    return { ok: true, version: pick.info.version, current: cur, mirror: pick.base, via: pick.label };
+  }
+  sendUpdate('update:status', { state: 'none', info: { version: cur } });
+  return { ok: true, version: cur, current: cur, none: true };
+}
+ipcMain.handle('update:version', () => ({ version: app.getVersion() }));
 
-// 错误处理：提取更详细的信息（错误码/网络错误/校验错误），并自动重试一次（应对 GitHub 资产域名偶发抖动）
-let retryCount = 0;
-autoUpdater.on('error', (err) => {
-  const raw = String(err && err.message || err);
-  let friendly = raw;
-  // 常见错误友好化
-  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|ECONNRESET|getaddrinfo|aborted|timed out|net::ERR/i.test(raw)) {
-    friendly = '网络连接失败（GitHub 下载域名偶发不可达）: ' + raw;
-  } else if (/cannot find latest|404|latest\.yml/i.test(raw)) {
-    friendly = '未找到更新元数据（latest.yml）: ' + raw;
-  } else if (/sha512|checksum|mismatch|integrity/i.test(raw)) {
-    friendly = '更新包校验失败: ' + raw;
+/* ---- 自实现下载：流式写入临时目录，支持多源失败切换 ---- */
+let downloading = false;
+let downloadedPath = '';
+
+async function downloadFile(url, dest, onProgress, { proxy = null, timeout = 25000 } = {}) {
+  const r = await openStream(url, { timeout }, proxy, 6);
+  if (r.err) return { ok: false, error: r.err };
+  const res = r.stream;
+  if (r.status !== 200 && r.status !== 206) { res.resume(); return { ok: false, error: 'HTTP ' + r.status }; }
+  const total = Number(r.headers['content-length'] || 0);
+  let got = 0, lastTick = 0;
+  return await new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const out = fs.createWriteStream(dest);
+    res.on('data', (chunk) => {
+      got += chunk.length;
+      const now = Date.now();
+      if (onProgress && now - lastTick > 400) { lastTick = now; onProgress(got, total); }
+    });
+    res.on('error', (e) => { try { out.destroy(); } catch (_) {} done({ ok: false, error: (e && e.code) || '网络中断', partial: got }); });
+    out.on('error', (e) => { try { res.destroy(); } catch (_) {} done({ ok: false, error: e.message }); });
+    out.on('finish', () => { if (onProgress) onProgress(got, total || got); done({ ok: true, size: got }); });
+    res.pipe(out);
+  });
+}
+
+/* 下载策略：代理+官方 优先（实测快 5~10 倍），失败降级到镜像 */
+async function doDownload() {
+  if (downloading) return { ok: false, error: '正在下载中，请稍候' };
+  downloading = true;
+  try {
+    const pick = await pickFeed();
+    if (!pick) {
+      const msg = '没有可用的下载源（GitHub 直连与全部镜像均不可达）';
+      sendUpdate('update:status', { state: 'error', message: msg });
+      return { ok: false, error: msg };
+    }
+    const info = pick.info;
+    const name = info.file || ('YJAI-Setup-' + info.version + '.exe');
+    const dest = path.join(app.getPath('temp'), name);
+
+    const proxy = await getSystemProxy();
+    // 候选顺序：代理+官方 → 直连官方 → 各镜像直连
+    const tries = [];
+    if (proxy) tries.push({ base: GH_LATEST, proxy, label: '代理加速' });
+    tries.push({ base: GH_LATEST, proxy: null, label: '直连' });
+    UPDATE_MIRRORS.forEach((m) => { if (m !== GH_LATEST) tries.push({ base: m, proxy: null, label: '镜像' }); });
+
+    let lastErr = '';
+    for (const t of tries) {
+      try { fs.unlinkSync(dest); } catch (_) {}
+      sendUpdate('update:status', { state: 'downloading', percent: 0, transferred: 0, total: 0, mirror: t.base, via: t.label });
+      const r = await downloadFile(t.base + '/' + name, dest, (got, total) => {
+        const percent = total ? Math.min(100, got * 100 / total) : 0;
+        sendUpdate('update:status', { state: 'downloading', percent, transferred: got, total, mirror: t.base, via: t.label });
+      }, { proxy: t.proxy });
+      if (!r.ok) { lastErr = r.error; continue; }
+
+      // 1) 必须是 PE 可执行文件，防止镜像返回的 HTML 错误页被当安装包启动
+      let head = Buffer.alloc(2);
+      try {
+        const fd = fs.openSync(dest, 'r');
+        fs.readSync(fd, head, 0, 2, 0);
+        fs.closeSync(fd);
+      } catch (_) {}
+      if (head.toString() !== 'MZ') { lastErr = '下载到的不是安装包（来源返回异常内容）'; continue; }
+
+      // 2) sha512 与 latest.yml 比对，防止半截文件
+      if (info.sha512) {
+        const h = crypto.createHash('sha512');
+        h.update(fs.readFileSync(dest));
+        if (h.digest('base64') !== info.sha512) { lastErr = '安装包校验不通过（下载可能不完整）'; continue; }
+      }
+
+      downloadedPath = dest;
+      sendUpdate('update:status', { state: 'downloaded', version: info.version, path: dest, size: r.size, mirror: t.base, via: t.label });
+      return { ok: true, version: info.version, path: dest, size: r.size, via: t.label };
+    }
+    const msg = '下载失败：' + (lastErr || '未知错误');
+    sendUpdate('update:status', { state: 'error', message: msg });
+    return { ok: false, error: msg };
+  } finally {
+    downloading = false;
   }
-  console.error('[update error]', err && (err.stack || err.message || err));
-  // 网络类错误自动重试一次（延迟 3 秒）
-  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|ECONNRESET|getaddrinfo|aborted|timed out|net::ERR/i.test(raw) && retryCount < 1) {
-    retryCount++;
-    sendUpdate('update:status', { state: 'checking', retry: retryCount });
-    setTimeout(() => { runUpdateCheck(true).catch(() => {}); }, 3000);
-    return;
-  }
-  retryCount = 0;
-  sendUpdate('update:status', { state: 'error', message: friendly });
-});
+}
 
 ipcMain.handle('update:check', async () => {
-  try { retryCount = 0; return await runUpdateCheck(true); }
+  try { return await checkUpdate(); }
   catch (e) { return { error: String(e.message || e) }; }
 });
-ipcMain.handle('update:download', () => {
-  try { autoUpdater.downloadUpdate(); return true; }
+ipcMain.handle('update:download', async () => {
+  try { return await doDownload(); }
   catch (e) { return { error: String(e.message || e) }; }
 });
-ipcMain.handle('update:install', () => {
-  try { autoUpdater.quitAndInstall(false, true); return true; }
-  catch (e) { return { error: String(e.message || e) }; }
+ipcMain.handle('update:install', async () => {
+  try {
+    if (!downloadedPath || !fs.existsSync(downloadedPath)) return { error: '安装包不存在，请重新下载' };
+    const r = await shell.openPath(downloadedPath);
+    if (r) return { error: '启动安装程序失败：' + r };
+    setTimeout(() => { try { app.quit(); } catch (_) {} }, 1500);
+    setTimeout(() => { try { app.exit(0); } catch (_) {} }, 6000);
+    return { ok: true };
+  } catch (e) { return { error: String(e.message || e) }; }
 });
-ipcMain.handle('update:version', () => ({ version: app.getVersion() }));
 // 手动下载兜底：镜像连不上/客户端下载失败时，直接用浏览器拉安装包
 ipcMain.handle('update:manual', async () => {
   try {
     let name = '';
     try {
-      const r = await fetch('https://api.github.com/repos/HiMatrixor/YJAI/releases/latest', { headers: { 'User-Agent': 'yjai-updater' } });
-      const j = await r.json();
-      const ex = (j && j.assets || []).find(a => /\.exe$/i.test(a.name || ''));
-      if (ex) name = ex.name;
+      const r = await httpText('https://api.github.com/repos/HiMatrixor/YJAI/releases/latest', { timeout: 8000 });
+      if (r.ok) {
+        const j = JSON.parse(r.text);
+        const ex = (j && j.assets || []).find((a) => /\.exe$/i.test(a.name || ''));
+        if (ex) name = ex.name;
+      }
     } catch (_) {}
-    // 现探一次可用镜像，避免打开一个已经挂掉的链接
-    const base = await pickFeed(true);
-    const url = base
-      ? (name ? base + '/' + name : base + '/latest.yml')
-      : ('https://github.com/HiMatrixor/YJAI/releases/latest/download/' + (name || ''));
+    const pick = await pickFeed();
+    const base = pick ? pick.base : '';
+    if (!name && pick) name = pick.info.file || ('YJAI-Setup-' + pick.info.version + '.exe');
+    const url = base ? (base + '/' + name) : ('https://github.com/HiMatrixor/YJAI/releases/latest');
     shell.openExternal(url);
     return { ok: true, url: url, mirrored: !!base };
   } catch (e) { return { error: String(e.message || e) }; }
@@ -1174,7 +1366,8 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
   // 启动后延迟自动检查更新（仅打包环境生效）：走镜像选源
-  setTimeout(() => { runUpdateCheck(false).catch(() => { /* 开发环境忽略 */ }); }, 5000);
+  // 启动后延迟自动检查更新（静默，不打断用户）
+  setTimeout(() => { checkUpdate().catch(() => {}); }, 5000);
 });
 
 app.on('window-all-closed', () => {

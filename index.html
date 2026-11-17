@@ -3968,14 +3968,20 @@ function initUpdater(){
         $('#btnInstallUpdate').style.display='none';
       }
       else if(p.state==='downloading'){
+        const mb=(n)=>((n||0)/1048576).toFixed(1)+'MB';
         const pc=(p.percent||0).toFixed(1);
-        el.textContent='⏬ 正在下载更新 '+pc+'%';
+        const via=(p.via&&p.via!=='直连')?(' 经'+p.via):'';
+        el.textContent=p.total
+          ? '⏬ 正在下载更新 '+mb(p.transferred)+' / '+mb(p.total)+'（'+pc+'%）'+via
+          : '⏬ 正在下载更新 '+mb(p.transferred)+via;
         el.style.color='var(--muted)';
+        const db=$('#btnDownloadUpdate'); if(db) db.disabled=true;
       }
       else if(p.state==='downloaded'){
-        el.textContent='✅ 更新已下载完成，点击「立即重启安装」';
+        el.textContent='✅ 更新已下载完成'+(p.via?('（经'+p.via+'）'):'')+'，点击「立即重启安装」';
         el.style.color='var(--green)';
         $('#btnDownloadUpdate').style.display='none';
+        $('#btnDownloadUpdate').disabled=false;
         $('#btnInstallUpdate').style.display='';
       }
       else if(p.state==='error'){ let m=(p.message||'更新出错'); if(m.indexOf('手动下载')<0) m+='　（可点「手动下载」用浏览器获取）'; el.textContent='❌ '+m; el.style.color='var(--red)'; }
