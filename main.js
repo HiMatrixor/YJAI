@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, Menu, ipcMain, webContents, session } = require('electron');
+const { app, BrowserWindow, Notification, shell, Menu, ipcMain, webContents, session } = require('electron');
 const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
@@ -9,6 +9,10 @@ const httpMod = require('node:http');
 
 let mainWin = null;
 let browserWin = null;
+
+/* Windows 通知（Toast）必须设置 AppUserModelID，且与 electron-builder 的 appId 一致，
+   否则通知发得出去但系统不显示（开发模式直接跑 electron.exe 时常踩这个）。 */
+try { app.setAppUserModelId('com.yjai.reader'); } catch (_) {}
 
 /* ============ 未捕获异常兜底 ============ */
 // 已知 Electron 内部问题：对 webview attach debugger 后，页面跳转/刷新销毁 render frame 时，
@@ -95,7 +99,7 @@ function openStream(rawUrl, opts, proxy, redirectLeft) {
       }, handle);
       req.setTimeout(idleTimeout, () => { try { req.destroy(); } catch (_) {} resolve({ err: '连接超时' }); });
       req.on('error', (e) => resolve({ err: (e && e.code) || '网络错误' }));
-      req.end();
+      req.end(opts.body || undefined);
     };
 
     if (proxy && proxy.host && isHttps && !opts.noProxy) {
@@ -115,7 +119,7 @@ function openStream(rawUrl, opts, proxy, redirectLeft) {
         }, handle);
         req.setTimeout(idleTimeout, () => { try { req.destroy(); } catch (_) {} resolve({ err: '连接超时' }); });
         req.on('error', (e) => resolve({ err: (e && e.code) || '网络错误' }));
-        req.end();
+        req.end(opts.body || undefined);
       });
       cr.on('timeout', () => { try { cr.destroy(); } catch (_) {} doDirect(); });
       cr.on('error', () => { try { cr.destroy(); } catch (_) {} doDirect(); });
@@ -1358,6 +1362,134 @@ ipcMain.handle('browser:cdp-submit', async () => {
   } finally {
     if (attached) { try { wc.debugger.detach(); } catch (_) {} }
   }
+});
+
+/* ============ 结束提醒（电脑通知 + PushPlus 微信） ============ */
+/*
+   设计要点：
+   1) 通知只在阅卷收尾时发一次，由渲染进程判定「完成 / 中断」后调过来，主进程不再判断业务。
+   2) 手机推送必须走 node:https 直连（失败再降级到系统代理），不能用渲染进程 fetch：
+      本机系统代理会劫持 Chromium 网络栈，之前自动更新就是这么被拖死的。
+   3) 推送失败只回传错误给界面记日志，绝不抛异常影响阅卷收尾。
+*/
+function readAllText(stream, limit = 65536) {
+  return new Promise((resolve) => {
+    let b = '';
+    stream.setEncoding('utf8');
+    stream.on('data', (d) => { if (b.length < limit) b += d; });
+    stream.on('end', () => resolve(b));
+    stream.on('error', () => resolve(b));
+  });
+}
+
+async function postJson(rawUrl, obj, { timeout = 12000 } = {}) {
+  const body = Buffer.from(JSON.stringify(obj), 'utf8');
+  const headers = {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': String(body.length),
+    'Accept': 'application/json'
+  };
+  const attempt = async (proxy, noProxy) => {
+    const r = await openStream(rawUrl, { method: 'POST', body, headers, timeout, noProxy }, proxy, 4);
+    if (r.err) return { ok: false, error: r.err };
+    const text = await readAllText(r.stream);
+    if (r.status < 200 || r.status >= 300) {
+      return { ok: false, error: 'HTTP ' + r.status + (text ? ' ' + text.slice(0, 120) : '') };
+    }
+    return { ok: true, status: r.status, text };
+  };
+  let r = await attempt(null, true);          // 国内推送服务直连即可
+  if (!r.ok) {
+    const proxy = await getSystemProxy();     // 公司网络等必须走代理时才用得上
+    if (proxy) {
+      const r2 = await attempt(proxy, false);
+      if (r2.ok) return r2;
+      r = { ok: false, error: r.error + ' / 代理：' + r2.error };
+    }
+  }
+  return r;
+}
+
+async function pushPlusSend(token, title, content) {
+  const t = String(token || '').trim();
+  if (!t) return { ok: false, error: '未填写 PushPlus token' };
+  const r = await postJson('https://www.pushplus.plus/send', {
+    token: t,
+    title: String(title || 'YJAI 提醒').slice(0, 100),
+    content: String(content || ''),
+    template: 'txt'
+  }, { timeout: 12000 });
+  if (!r.ok) return { ok: false, error: r.error };
+  let j = null;
+  try { j = JSON.parse(r.text); } catch (_) {}
+  if (!j) return { ok: false, error: '返回内容无法解析：' + String(r.text || '').slice(0, 80) };
+  if (Number(j.code) === 200) return { ok: true };
+  return { ok: false, error: j.msg || ('错误码 ' + j.code) };
+}
+
+/* 电脑端：系统通知 + 提示音 + 任务栏闪烁，三件一起上。
+   原因：Windows「专注助手」会吞掉 Toast，只靠通知很可能静悄悄地什么也没有。 */
+function notifyDesktop(p) {
+  const opts = (p && p.opts) || {};
+  let shown = false;
+  try {
+    if (opts.desktop !== false && Notification.isSupported()) {
+      const n = new Notification({
+        title: String((p && p.title) || 'YJAI'),
+        body: String((p && p.body) || ''),
+        silent: true   // 声音统一在下面播，避免被系统的通知静音策略连带掐掉
+      });
+      n.on('click', () => {
+        try {
+          if (mainWin && !mainWin.isDestroyed()) { mainWin.show(); mainWin.restore(); mainWin.focus(); }
+        } catch (_) {}
+      });
+      n.show();
+      shown = true;
+    }
+  } catch (_) {}
+  if (opts.sound !== false) {
+    try {
+      shell.beep();
+      setTimeout(() => { try { shell.beep(); } catch (_) {} }, 420);
+    } catch (_) {}
+  }
+  if (opts.flash !== false && mainWin && !mainWin.isDestroyed() && !mainWin.isFocused()) {
+    try {
+      mainWin.flashFrame(true);
+      setTimeout(() => { try { mainWin.flashFrame(false); } catch (_) {} }, 15000);
+    } catch (_) {}
+  }
+  return shown;
+}
+
+async function sendNotify(p) {
+  const payload = p || {};
+  const opts = payload.opts || {};
+  const out = { desktop: false, push: null };
+  out.desktop = notifyDesktop(payload);
+  const pp = opts.pushplus || {};
+  if (pp.enabled) out.push = await pushPlusSend(pp.token, payload.title, payload.body);
+  return out;
+}
+
+ipcMain.handle('notify:done', (e, p) => {
+  return sendNotify(p).catch((err) => ({ desktop: false, push: { ok: false, error: String(err && err.message || err) } }));
+});
+
+ipcMain.handle('notify:test', (e, p) => {
+  const opts = (p && p.opts) || {};
+  const title = 'YJAI 提醒测试';
+  const body = '能收到这条，说明提醒通道已打通。\n发送时间：' + new Date().toLocaleString('zh-CN');
+  return sendNotify({ title, body, opts })
+    .then((r) => {
+      if (!r.push) r.push = { ok: false, error: '未启用手机提醒或未填写 token' };
+      return r;
+    })
+    .catch((err) => ({
+      desktop: false,
+      push: { ok: false, error: String(err && err.message || err) }
+    }));
 });
 
 app.whenReady().then(() => {

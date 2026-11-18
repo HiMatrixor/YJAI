@@ -32,5 +32,9 @@ contextBridge.exposeInMainWorld('YJAI', {
   installUpdate: () => ipcRenderer.invoke('update:install'),
   getVersion: () => ipcRenderer.invoke('update:version'),
   manualDownload: () => ipcRenderer.invoke('update:manual'),
-  onUpdateStatus: (cb) => ipcRenderer.on('update:status', (e, payload) => cb(payload))
+  onUpdateStatus: (cb) => ipcRenderer.on('update:status', (e, payload) => cb(payload)),
+
+  // —— 结束提醒（电脑通知 + 手机推送） ——
+  notifyDone: (payload) => ipcRenderer.invoke('notify:done', payload),
+  notifyTest: (payload) => ipcRenderer.invoke('notify:test', payload)
 });

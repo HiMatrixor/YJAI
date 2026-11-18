@@ -80,6 +80,13 @@
   input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(79,140,255,.15)}
   textarea{resize:vertical;min-height:90px;line-height:1.6}
   select{cursor:pointer}
+  /* 开关 */
+  .sw{display:inline-flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;margin:0;color:var(--text);user-select:none}
+  .sw input{display:none}
+  .sw i{width:34px;height:19px;border-radius:20px;background:var(--border2);position:relative;transition:.15s;flex:0 0 auto}
+  .sw i::after{content:'';position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#fff;transition:.15s}
+  .sw input:checked + i{background:var(--accent)}
+  .sw input:checked + i::after{left:17px}
   .btn{
     display:inline-flex;align-items:center;gap:6px;padding:9px 18px;border:none;border-radius:8px;
     font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;transition:.15s;color:#fff;
@@ -692,6 +699,24 @@
         <div class="hint" style="margin-top:10px">解锁串与机器码绑定，一机一码；免费版可使用智能阅卷 / 整卷阅卷 / 学情分析等功能。点击「购买授权」扫码支付后进 QQ 群联系群主获取解锁串，输入后自动生成激活码完成激活。</div>
       </div>
       <div class="card">
+        <h3>🔔 结束提醒</h3>
+        <div class="hint" style="margin-bottom:12px">浏览器阅卷跑完、或中途卡住停下来时提醒你。可以只提醒电脑，也可以同时推到手机微信。</div>
+        <div class="row" style="gap:20px;flex-wrap:wrap">
+          <label class="sw"><input type="checkbox" id="nfDesktop"><i></i><span>电脑通知</span></label>
+          <label class="sw"><input type="checkbox" id="nfSound"><i></i><span>提示音</span></label>
+          <label class="sw"><input type="checkbox" id="nfFlash"><i></i><span>任务栏闪烁</span></label>
+          <label class="sw"><input type="checkbox" id="nfPush"><i></i><span>手机提醒（微信）</span></label>
+        </div>
+        <label>PushPlus token</label>
+        <input type="text" id="nfToken" placeholder="登录 pushplus.plus 微信扫码后复制 token" style="font-family:'Cascadia Code',Consolas,monospace" />
+        <div class="hint" style="margin-top:8px">获取方式：手机微信扫码登录 <b>pushplus.plus</b> → 首页「一对一推送」复制 token 填到上面。提醒内容只含已完成份数、均分、用时和中止原因，不含学生姓名与截图。</div>
+        <div class="row end" style="margin-top:14px">
+          <button class="btn btn-ghost" id="nfTest">发送测试</button>
+          <button class="btn btn-primary" id="nfSave">保存提醒设置</button>
+        </div>
+        <div class="hint" id="nfResult" style="margin-top:10px"></div>
+      </div>
+      <div class="card">
         <h3>数据管理</h3>
         <div class="hint" style="margin-bottom:12px">所有阅卷记录与模板均保存在本机浏览器中。</div>
         <div class="row end">
@@ -906,9 +931,27 @@ function toggleTheme(){
 /* ================= 初始化加载 ================= */
 function loadState(){
   state.settings = load('settings',{baseUrl:'',apiKey:'',model:''});
+  normalizeSettings();
   state.templates = load('templates',[defaultTplObject()]);
   state.records = load('records',[]);
   state.usage = load('usage',{prompt:0,completion:0});
+}
+/* 旧版本存下来的 settings 没有 notify / brDocEngine 字段，这里补齐默认值，
+   避免每次读配置都要判空。注意必须就地补，不能整体替换对象。 */
+function normalizeSettings(){
+  const s = state.settings || {};
+  s.baseUrl = s.baseUrl || ''; s.apiKey = s.apiKey || ''; s.model = s.model || '';
+  const n = s.notify || {};
+  const pp = n.pushplus || {};
+  s.notify = {
+    desktop: n.desktop !== false,
+    sound: n.sound !== false,
+    flash: n.flash !== false,
+    pushplus: { enabled: !!pp.enabled, token: pp.token || '' }
+  };
+  if(!s.brDocEngine) s.brDocEngine = 'auto';
+  state.settings = s;
+  return s;
 }
 function defaultTplObject(){return {...DEFAULT_TPL,id:uid()};}
 
@@ -943,7 +986,24 @@ function loadSettingsUI(){
   $('#setBaseUrl').value = state.settings.baseUrl||'';
   $('#setApiKey').value = state.settings.apiKey||'';
   $('#setModel').value = state.settings.model||'';
+  const n = state.settings.notify || {};
+  const pp = n.pushplus || {};
+  const setChk = (id,on)=>{ const el=$(id); if(el) el.checked = !!on; };
+  setChk('#nfDesktop', n.desktop !== false);
+  setChk('#nfSound', n.sound !== false);
+  setChk('#nfFlash', n.flash !== false);
+  setChk('#nfPush', pp.enabled);
+  const tk = $('#nfToken'); if(tk) tk.value = pp.token || '';
   refreshApiStatus();
+}
+/* 从设置界面读回提醒配置 */
+function readNotifyUI(){
+  return {
+    desktop: !!$('#nfDesktop').checked,
+    sound: !!$('#nfSound').checked,
+    flash: !!$('#nfFlash').checked,
+    pushplus: { enabled: !!$('#nfPush').checked, token: $('#nfToken').value.trim() }
+  };
 }
 async function callAI(messages,{json=false}={}){
   const cfg = state.settings;
@@ -2000,13 +2060,41 @@ function applyLicenseLock(){
 
 /* ================= 浏览器阅卷 ================= */
 const IS_DESKTOP = !!(window.YJAI && window.YJAI.isDesktop);
-let brState = { engine:'edge', area:null, selectors:{input:'',submit:'',meta:''}, coords:{input:null,submit:null}, fillMode:'element', coordStep:1, running:false, done:0, sum:0, lastResult:null };
+let brState = { engine:'edge', area:null, selectors:{input:'',submit:'',meta:''}, coords:{input:null,submit:null}, fillMode:'element', coordStep:1, running:false, done:0, sum:0, lastResult:null, stopReason:'', manualStop:false };
 let browserReady = false;
 function saveBr(){ try{localStorage.setItem('yjai_br',JSON.stringify({engine:brState.engine,area:brState.area,selectors:brState.selectors,coords:brState.coords,fillMode:brState.fillMode,coordStep:brState.coordStep}));}catch(e){} }
 function loadBr(){ try{const v=localStorage.getItem('yjai_br');if(v){const o=JSON.parse(v);if(o){if(o.engine)brState.engine=o.engine;if(o.area)brState.area=o.area;if(o.fillMode)brState.fillMode=o.fillMode;if(o.coordStep)brState.coordStep=o.coordStep;}}}catch(e){} }
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function brLog(msg,cls){ const el=$('#brLog'); const d=document.createElement('div'); d.className=cls||'i'; d.textContent='['+new Date().toLocaleTimeString('zh-CN')+'] '+msg; el.appendChild(d); el.scrollTop=el.scrollHeight; }
 function brSetStatus(t){ const el=$('#brStatus'); el.innerHTML='<span>'+esc(t)+'</span>'; }
+/* 收尾文案：把「跑完 / 中断 / 部分失败」三种情况区分开。
+   之前一律显示「阅卷结束」，人在外面收到推送会误以为全做完了。 */
+function brEndReport(count, done, sum, mins, stopReason, manualStop){
+  const avg = done ? (sum/done).toFixed(1) : '—';
+  const reason = stopReason || (manualStop && done < count ? '已手动停止' : '');
+  if(reason){
+    return { title:'⚠ 阅卷中断', ok:false,
+      body: reason + '；已完成 ' + done + ' 份' + (done ? '，均分 ' + avg : '') + '，用时 ' + mins + ' 分钟' };
+  }
+  if(done < count){
+    return { title:'⚠ 阅卷结束（部分未成功）', ok:false,
+      body: '成功 ' + done + ' 份，' + (count - done) + ' 份未完成' + (done ? '，均分 ' + avg : '') + '，用时 ' + mins + ' 分钟' };
+  }
+  return { title:'✅ 阅卷完成', ok:true,
+    body: '共 ' + done + ' 份，均分 ' + avg + '，用时 ' + mins + ' 分钟' };
+}
+/* 阅卷收尾时把结果发出去：电脑通知 + 手机（PushPlus）。失败只记日志，不影响收尾。 */
+async function notifyGradingEnd(p){
+  if(!(window.YJAI && YJAI.notifyDone)) return;
+  const opts = (state.settings && state.settings.notify) || {};
+  const pushOn = !!(opts.pushplus && opts.pushplus.enabled && opts.pushplus.token);
+  if(opts.desktop === false && !pushOn) return;
+  try{
+    const r = await YJAI.notifyDone({ title:p.title, body:p.body, ok:p.ok, opts:opts });
+    if(r && r.push && r.push.ok) brLog('手机提醒已发送到微信','i');
+    else if(r && r.push && r.push.error) brLog('手机提醒发送失败：'+r.push.error,'w');
+  }catch(e){ brLog('提醒发送失败：'+((e&&e.message)||e),'w'); }
+}
 function normalizeUrl(url){ if(!url) return url; if(!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) url='https://'+url; return url; }
 function brRelay(action, data){ return window.YJAI.relayToBrowser({ id:uid(), action:action, data:data }); }
 
@@ -2363,6 +2451,8 @@ async function startAuto(){
   }
   const count = Number($('#brCount').value) || 10;
   brState.running = true; brState.done = 0; brState.sum = 0; brState.lastResult = null;
+  brState.stopReason = ''; brState.manualStop = false;
+  const t0 = Date.now();
   $('#brStart').disabled = true; $('#brStart').textContent = '⏳ 运行中';
   $('#brLog').innerHTML = '';
   brLog('开始自动阅卷，共 '+count+' 份');
@@ -2371,8 +2461,8 @@ async function startAuto(){
     brSetStatus('第 '+n+' 份：截图中…');
     brLog('第 '+n+' 份：截图中…');
     let shot;
-    try{ shot = await captureAreaRaw(); }catch(e){ brLog('截图失败: '+e.message,'e'); break; }
-    if(!shot) break;
+    try{ shot = await captureAreaRaw(); }catch(e){ brLog('截图失败: '+e.message,'e'); brState.stopReason='第 '+n+' 份截图失败'; break; }
+    if(!shot){ brState.stopReason='第 '+n+' 份截图失败'; break; }
     brSetStatus('第 '+n+' 份：AI 评分中…');
     brLog('第 '+n+' 份：AI 评分中…');
     let result;
@@ -2380,10 +2470,10 @@ async function startAuto(){
     brSetStatus('第 '+n+' 份：得分 '+result.score+'，提交中…');
     brLog('第 '+n+' 份：得分 '+result.score+'，提交中…');
     const okFill = await fillScoreInPage(result.score);
-    if(!okFill){ brLog('分数输入框未找到，请重新拾取','w'); break; }
+    if(!okFill){ brLog('分数输入框未找到，请重新拾取','w'); brState.stopReason='第 '+n+' 份：分数输入框未找到'; break; }
     await sleep(400);
     const okSub = await clickSubmitInPage();
-    if(!okSub){ brLog('提交按钮未找到，请重新拾取','w'); break; }
+    if(!okSub){ brLog('提交按钮未找到，请重新拾取','w'); brState.stopReason='第 '+n+' 份：提交按钮未找到'; break; }
     brState.done++; brState.sum += result.score; brState.lastResult = result;
     const fullScore = Number($('#brFullScore').value)||6;
     state.records.push({ id:uid(), student:'（浏览器阅卷）'+brState.done, subject:$('#brSubject').value, question:$('#brCriteria').value.trim().slice(0,80), score:result.score, fullScore:fullScore, rate:fullScore?Math.round(result.score/fullScore*1000)/10:0, details:[], deduction:'', comment:result.comment||'', suggestion:'', time:new Date().toLocaleString('zh-CN') });
@@ -2397,9 +2487,14 @@ async function startAuto(){
   }
   brState.running = false;
   $('#brStart').disabled = false; $('#brStart').textContent = '▶ 开始阅卷';
-  brSetStatus('阅卷结束，共完成 '+brState.done+' 份');
-  brLog('阅卷结束，共完成 '+brState.done+' 份');
-  toast('阅卷结束，共 '+brState.done+' 份','ok');
+
+  // —— 收尾：区分「跑完」和「停下来」，再把结果发到电脑 / 手机 ——
+  const mins = Math.max(1, Math.round((Date.now() - t0) / 60000));
+  const rep = brEndReport(count, brState.done, brState.sum, mins, brState.stopReason, brState.manualStop);
+  brSetStatus(rep.body);
+  brLog(rep.body, rep.ok ? 'i' : 'w');
+  toast(rep.title + ' · ' + rep.body, rep.ok ? 'ok' : 'err');
+  notifyGradingEnd({ title: rep.title, body: rep.body, ok: rep.ok });
 }
 function updateMonitor(){
   $('#brMCount').textContent = brState.done;
@@ -2651,7 +2746,7 @@ function bindBrowserEvents(){
     brLog('=== 页面候选元素 ===\n'+((r&&r.result)||'无结果'), 'i');
   };
   $('#brStart').onclick = startAuto;
-  $('#brStop').onclick = ()=>{ brState.running=false; brLog('收到停止请求，将在当前题结束后停止','w'); };
+  $('#brStop').onclick = ()=>{ brState.running=false; brState.manualStop=true; brLog('收到停止请求，将在当前题结束后停止','w'); };
   $('#brPreviewBtn').onclick = toggleBrPreview;
   // 题目 / 答案文档上传
   $('#brPickDocs').onclick = () => $('#brDocsInput').click();
@@ -4134,11 +4229,12 @@ function bindEvents(){
   $('#btnTplSave').onclick=saveTplModal;
   $('#btnOptimize').onclick=runOptimize;
   $('#btnSaveSettings').onclick=()=>{
-    state.settings={baseUrl:$('#setBaseUrl').value.trim(),apiKey:$('#setApiKey').value.trim(),model:$('#setModel').value.trim()};
+    // 合并而不是整体替换：settings 里还存着 brDocEngine、notify 等非 API 字段
+    Object.assign(state.settings,{baseUrl:$('#setBaseUrl').value.trim(),apiKey:$('#setApiKey').value.trim(),model:$('#setModel').value.trim()});
     save('settings',state.settings);refreshApiStatus();toast('配置已保存','ok');
   };
   $('#btnTestApi').onclick=async()=>{
-    state.settings={baseUrl:$('#setBaseUrl').value.trim(),apiKey:$('#setApiKey').value.trim(),model:$('#setModel').value.trim()};
+    Object.assign(state.settings,{baseUrl:$('#setBaseUrl').value.trim(),apiKey:$('#setApiKey').value.trim(),model:$('#setModel').value.trim()});
     const tr=$('#testResult');tr.textContent='测试中…';tr.style.color='var(--muted)';
     try{await callAI([{role:'user',content:'请只回复：连接成功'}],{json:false});tr.textContent='✅ 连接成功，模型可用';tr.style.color='var(--green)';}
     catch(e){tr.textContent='❌ '+e.message;tr.style.color='var(--red)';}
@@ -4146,6 +4242,36 @@ function bindEvents(){
   $$('.preset button').forEach(b=>b.onclick=()=>{
     const p=PRESETS[b.dataset.preset];$('#setBaseUrl').value=p.base;$('#setModel').value=p.model;toast('已填入 '+b.textContent+' 配置，请补充 API Key','ok');
   });
+  // —— 结束提醒 ——
+  $('#nfSave').onclick=()=>{
+    state.settings.notify = readNotifyUI();
+    save('settings',state.settings);
+    const r=$('#nfResult');
+    if(r){ r.textContent='提醒设置已保存'; r.style.color='var(--green)'; }
+    toast('提醒设置已保存','ok');
+  };
+  $('#nfTest').onclick=async()=>{
+    const r=$('#nfResult');
+    if(!(window.YJAI&&YJAI.notifyTest)){
+      if(r){ r.textContent='当前环境不支持提醒（需在桌面客户端中使用）'; r.style.color='var(--red)'; }
+      return;
+    }
+    const opts = readNotifyUI();
+    state.settings.notify = opts; save('settings',state.settings);
+    if(r){ r.textContent='发送中…'; r.style.color='var(--muted)'; }
+    let res;
+    try{ res = await YJAI.notifyTest({ opts }); }
+    catch(e){ res = null; if(r){ r.textContent='发送失败：'+(e&&e.message||e); r.style.color='var(--red)'; } return; }
+    const bits=[];
+    bits.push(res&&res.desktop ? '电脑通知已弹出' : '电脑通知未弹出（检查系统「通知」与「专注助手」设置）');
+    if(res&&res.push&&res.push.ok) bits.push('手机提醒已发送，请查看微信');
+    else if(res&&res.push) bits.push('手机提醒失败：'+res.push.error);
+    else bits.push('未启用手机提醒');
+    if(r){
+      r.textContent=bits.join(' · ');
+      r.style.color=(res&&res.push&&res.push.error)?'var(--amber)':'var(--green)';
+    }
+  };
   $('#btnClearRecords').onclick=async()=>{
     if(await uiConfirm('确定清空所有阅卷记录吗？此操作不可恢复。')){state.records=[];save('records',[]);renderAnalysis();toast('已清空','ok');}
   };
