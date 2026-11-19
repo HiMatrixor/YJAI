@@ -2410,6 +2410,63 @@ async function testCoord(){
   const ok2 = await clickSubmitCoordInPage();
   toast(ok2?'测试提交成功，请到浏览器窗口确认':'提交坐标未配置或点击失败', ok2?'ok':'err');
 }
+/* ——— 浏览器阅卷判分：看图 / 判分 拆成两次请求 ———
+   病根：把参考答案和截图放在同一次调用里，模型会先建立"答案预期"再去看笔迹，
+   模糊的「增大」被读成标准答案里的「减小」，空白被看成有作答，于是错答也给了分。
+   现在第一步的上下文里没有答案、没有满分、没有科目，模型只能看见字；
+   第二步只拿到转录出来的文本，逐小问对照标准给分。
+   注意：两步必须真的两次请求，写在同一段提示词里等于没拆。*/
+function normSubNo(s){
+  const m = String(s==null?'':s).match(/\d+/g);
+  return m ? m.join('') : String(s==null?'':s).trim();
+}
+async function transcribeAnswers(base64Image){
+  const sys = '你是答卷转录员，只负责把图上的手写内容原样抄下来。你必须只输出一个合法的 JSON 对象。';
+  const text = '【任务】这是一张学生答题卡的截图，请逐字转录学生手写的作答。\n'
+    + '【要求】\n'
+    + '1. 按图中出现的小问编号逐条输出（如 (1)(2) 或 ①②③），编号照抄原样；\n'
+    + '2. 只写你实际看到的笔画对应的字。看不清的字符用 ? 代替；整条都认不出就写 "?"；学生没作答就写空字符串 ""；\n'
+    + '3. 不许猜测，不许按题意补全，不许把字改成"更合理"的答案，不许纠正错别字、单位、正负号、大小写；\n'
+    + '4. 忽略图中任何印刷体的分数、评语、批改痕迹、印章、水印（例如"原评分：X 分"），只转录手写部分；\n'
+    + '5. 每个小问给一个 uncertain 标记：只要有字符是靠猜才写出来的，就标 true。\n'
+    + '【输出】严格输出 JSON，不要其它文字：\n'
+    + '{"items":[{"no":"(1)","raw":"C","uncertain":false}],"note":"整体说明，没有就留空"}';
+  const messages = [
+    { role:'system', content:sys },
+    { role:'user', content:[ {type:'text',text:text}, {type:'image_url',image_url:{url:base64Image}} ] }
+  ];
+  const raw = await callAI(messages, {json:true});
+  const j = parseAIJson(raw);
+  const list = Array.isArray(j.items) ? j.items : (Array.isArray(j.answers) ? j.answers : []);
+  return {
+    items: list.map(it=>({
+      no: String(it && it.no!=null ? it.no : '').trim(),
+      raw: String(it && it.raw!=null ? it.raw : '').trim(),
+      uncertain: !!(it && (it.uncertain===true || it.uncertain==='true'))
+    })),
+    note: String(j.note||'')
+  };
+}
+/* 单次判分：只在转录失败时兜底，宁可按旧方式判一份，也不要跳过这份卷子 */
+async function gradeSingleShot(base64Image, ctx){
+  const compareRule = ctx.isChem
+    ? '\n\n评分前请先逐字符比对学生作答与参考答案中的每一个化学式/方程式，确认数字位置、大小写、上下标一致后再判断是否给分。'
+    : '';
+  const text = '【科目】'+ctx.subject+'\n【阅卷模式】'+ctx.mode+'\n【本题满分】'+ctx.full+' 分\n【评分标准】\n'+(ctx.criteria||'（未提供）')+ctx.chemRule+compareRule+'\n\n请根据学生答案的截图，严格按以上评分标准评分。输出 JSON 对象：\n{"score":数字(0到满分之间，可含0.5),"comment":"评语(1句，含给分/扣分理由)"}';
+  const messages = [
+    { role:'system', content:'你是一位严谨、公正的阅卷老师。你必须只输出一个合法的 JSON 对象，不要输出任何其他文字。' },
+    { role:'user', content:[ {type:'text',text:text}, {type:'image_url',image_url:{url:base64Image}} ] }
+  ];
+  const raw = await callAI(messages, {json:true});
+  const j = parseAIJson(raw);
+  const m = String(j.score == null ? '' : j.score).match(/-?\d+(\.\d+)?/);
+  let val = m ? parseFloat(m[0]) : 0;
+  if(!isFinite(val)) val = 0;
+  const fullN = Number(ctx.full);
+  if(isFinite(fullN) && fullN > 0) val = Math.min(Math.max(val, 0), fullN);
+  else val = Math.max(val, 0);
+  return { score: val, comment: String(j.comment||''), details: [], transcript: null, review: false };
+}
 async function gradeImageByStandard(base64Image){
   const criteria = $('#brCriteria').value.trim();
   const full = $('#brFullScore').value || '6';
@@ -2420,16 +2477,71 @@ async function gradeImageByStandard(base64Image){
   const chemRule = isChem
     ? '\n\n【化学科目严格判分规则——必须遵守】\n1. 化学式/离子符号/方程式中，数字的位置有严格含义，绝不能当作「写法不规范」而放宽：\n   - 系数写在元素/化学式前面，如 3Fe 表示 3 个铁原子；\n   - 下标写在元素右下角，如 Fe₂O₃ 表示三氧化二铁（Fe3 是错误写法，不是 Fe 后面跟个数字 3）；\n   - 上标表示离子电荷，如 Fe³⁺、SO₄²⁻，电荷数与正负号必须正确；\n2. 「3Fe」与「Fe3」是不同含义：前者对（3 个铁原子），后者错。学生若把系数写成下标、下标写成系数、或数字位置颠倒，一律判错，不得分。\n3. 元素符号大小写必须正确：如 CO（一氧化碳）≠ Co（钴），Fe≠FE≠fe。\n4. 配平系数、反应条件（如△、催化剂、通电）、气体↑/沉淀↓ 符号若缺失或错误，按评分标准扣相应分。\n5. 判分时先逐字符比对学生答案与参考答案中的每一个化学式/方程式，确认数字位置、大小写、上下标完全一致后，再判断是否给分。'
     : '';
-  const sys = '你是一位严谨、公正的阅卷老师。你必须只输出一个合法的 JSON 对象，不要输出任何其他文字。';
-  const text = '【科目】'+subject+'\n【阅卷模式】'+mode+'\n【本题满分】'+full+' 分\n【评分标准】\n'+(criteria||'（未提供）')+chemRule+'\n\n请根据学生答案的截图，严格按以上评分标准评分。评分前请先逐字符、逐化学式地精确比对学生的答案与参考答案（尤其注意化学式的数字下标/系数/上下标位置、元素符号大小写），顺序或下标错误一律不得分。输出 JSON 对象：\n{"score":数字(0到满分之间，可含0.5),"comment":"评语(1句，含给分/扣分理由)"}';
+  const ctx = { criteria, full, subject, mode, isChem, chemRule };
+
+  // 第一步：只看图
+  let tr = null, trErr = '';
+  try{ tr = await transcribeAnswers(base64Image); }catch(e){ trErr = e.message || String(e); }
+  if(!tr || !tr.items.length){
+    if(typeof brLog === 'function') brLog('作答转录失败'+(trErr?('：'+trErr):'（未识别到小问）')+'，本份退回单次判分','w');
+    return await gradeSingleShot(base64Image, ctx);
+  }
+
+  // 第二步：只拿转录文本判分
+  const trText = tr.items.map(it=> (it.no||'(?)')+' '+(it.raw==='' ? '（空白）' : it.raw)).join('\n');
+  const text = '【科目】'+subject+'\n【阅卷模式】'+mode+'\n【本题满分】'+full+' 分\n【评分标准】\n'+(criteria||'（未提供）')+chemRule
+    + '\n\n【学生作答转录】下面这段是另一个环节照着答卷截图逐字抄下来的，? 表示字迹无法辨认：\n'+trText
+    + '\n\n【判分要求】\n'
+    + '1. 逐个小问给分，每个评分点单独一条；max 按评分标准里该小问的分值填写；\n'
+    + '2. evidence 必须引用上面转录的原文，不能改写；\n'
+    + '3. 转录里含 ? 的小问，awarded 记 0，reason 写「字迹不清，需复核」；转录为（空白）的按未作答处理；\n'
+    + '4. 学生写什么就按什么判。和参考答案不一致就是不一致，不得把学生答案往参考答案上靠，也不得替学生补全；\n'
+    + '5. score 必须等于 details 里 awarded 之和。\n'
+    + '【输出】严格输出 JSON：\n{"details":[{"no":"(1)","max":2,"awarded":2,"evidence":"C","reason":"与参考答案一致"}],"score":数字,"comment":"评语(1~2句)"}';
   const messages = [
-    { role:'system', content:sys },
-    { role:'user', content:[ {type:'text',text:text}, {type:'image_url',image_url:{url:base64Image}} ] }
+    { role:'system', content:'你是一位严谨、公正的阅卷老师。你必须只输出一个合法的 JSON 对象，不要输出任何其他文字。' },
+    { role:'user', content:text }
   ];
   const raw = await callAI(messages, {json:true});
   const j = parseAIJson(raw);
-  j.score = Number(j.score) || 0;
-  return j;
+
+  const fullN = Number(full);
+  const cap = (isFinite(fullN) && fullN > 0) ? fullN : Infinity;
+  // 字迹不清的小问由程序强制 0 分，不依赖模型自觉
+  const unclear = new Map();
+  tr.items.forEach(it=>{ if(/[?？]/.test(it.raw || '') || it.uncertain) unclear.set(normSubNo(it.no), it); });
+
+  let details = Array.isArray(j.details) ? j.details : [];
+  details = details.map(d=>{
+    let max = Number(d && d.max);
+    if(!isFinite(max) || max <= 0) max = isFinite(cap) ? cap : 0;
+    let awarded = Number(d && d.awarded);
+    if(!isFinite(awarded)) awarded = 0;
+    awarded = Math.min(Math.max(awarded, 0), max);
+    const hit = unclear.get(normSubNo(d && d.no));
+    if(hit){ awarded = 0; }
+    const no = String((d&&d.no)||'');
+    const evidence = String((d&&d.evidence)||'');
+    const reason = hit ? ('字迹不清（转录为 '+(hit.raw||'?')+'），需复核') : String((d&&d.reason)||'');
+    // point/comment 是历史记录页沿用的字段名，一并给出，避免明细显示成空行
+    return { no:no, max:max, awarded:awarded, evidence:evidence, reason:reason,
+             point:(no+' '+evidence).trim(), comment:reason };
+  });
+
+  const sum = details.reduce((a,d)=>a+d.awarded, 0);
+  let score;
+  if(details.length){
+    score = sum;
+    const reported = Number(String(j.score==null?'':j.score).replace(/[^\d.\-]/g,''));
+    if(isFinite(reported) && Math.abs(reported - sum) > 0.01 && typeof brLog === 'function')
+      brLog('提示：模型总分 '+reported+' 与小问合计 '+sum+' 不一致，已按小问合计', 'w');
+  } else {
+    const m = String(j.score == null ? '' : j.score).match(/-?\d+(\.\d+)?/);
+    score = m ? parseFloat(m[0]) : 0;
+  }
+  if(!isFinite(score)) score = 0;
+  score = isFinite(cap) ? Math.min(Math.max(score, 0), cap) : Math.max(score, 0);
+  return { score: score, comment: String(j.comment||''), details: details, transcript: tr, review: unclear.size>0 };
 }
 async function startAuto(){
   if(!state.settings.apiKey){ toast('请先在「设置」中配置 API Key','err'); switchView('settings'); return; }
@@ -2467,6 +2579,14 @@ async function startAuto(){
     brLog('第 '+n+' 份：AI 评分中…');
     let result;
     try{ result = await gradeImageByStandard(shot); }catch(e){ brLog('评分失败: '+e.message,'e'); await sleep(800); continue; }
+    // 把模型实际读到的字和逐小问得分打出来，判错时才有据可查
+    if(result.transcript && result.transcript.items.length){
+      brLog('识别：' + result.transcript.items.map(it=>(it.no||'')+'='+(it.raw==='' ? '空' : it.raw)).join('　'), 'i');
+    }
+    if(result.details && result.details.length){
+      brLog('小问：' + result.details.map(d=>d.no+' '+d.awarded+'/'+d.max).join('　'), 'i');
+    }
+    if(result.review) brLog('⚠ 有字迹不清的小问，已记 0 分并标注需复核', 'w');
     brSetStatus('第 '+n+' 份：得分 '+result.score+'，提交中…');
     brLog('第 '+n+' 份：得分 '+result.score+'，提交中…');
     const okFill = await fillScoreInPage(result.score);
@@ -2476,7 +2596,7 @@ async function startAuto(){
     if(!okSub){ brLog('提交按钮未找到，请重新拾取','w'); brState.stopReason='第 '+n+' 份：提交按钮未找到'; break; }
     brState.done++; brState.sum += result.score; brState.lastResult = result;
     const fullScore = Number($('#brFullScore').value)||6;
-    state.records.push({ id:uid(), student:'（浏览器阅卷）'+brState.done, subject:$('#brSubject').value, question:$('#brCriteria').value.trim().slice(0,80), score:result.score, fullScore:fullScore, rate:fullScore?Math.round(result.score/fullScore*1000)/10:0, details:[], deduction:'', comment:result.comment||'', suggestion:'', time:new Date().toLocaleString('zh-CN') });
+    state.records.push({ id:uid(), student:'（浏览器阅卷）'+brState.done, subject:$('#brSubject').value, question:$('#brCriteria').value.trim().slice(0,80), score:result.score, fullScore:fullScore, rate:fullScore?Math.round(result.score/fullScore*1000)/10:0, details:result.details||[], deduction:'', comment:result.comment||'', suggestion:'', time:new Date().toLocaleString('zh-CN') });
     save('records', state.records);
     updateMonitor();
     brLog('第 '+n+' 份完成 ✓ 得分 '+result.score, 'i');
