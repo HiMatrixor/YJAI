@@ -1,12 +1,14 @@
 {
   "name": "yjai",
-  "version": "1.9.24",
+  "version": "1.9.25",
   "description": "YJAI - AI 阅卷助手（本地桌面版）",
   "main": "main.js",
   "author": "YJAI",
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --win",
+    "dist:legacy": "node scripts/build-legacy.js",
+    "dist:all": "electron-builder --win && node scripts/build-legacy.js",
     "dist:publish": "electron-builder --win --publish always"
   },
   "devDependencies": {

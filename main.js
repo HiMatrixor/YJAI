@@ -41,6 +41,9 @@ process.on('uncaughtException', (err) => {
    A 优先，失败自动降级到 B，进度全程可见。
 */
 const GH_LATEST = 'https://github.com/HiMatrixor/YJAI/releases/latest/download';
+/* 32 位（Windows 7）走独立的版本清单：latest-ia32.yml。
+   两份清单指向各自的安装包，否则 32 位机器会下到 x64 包，装完直接打不开。 */
+const FEED_FILE = process.arch === 'ia32' ? 'latest-ia32.yml' : 'latest.yml';
 const UPDATE_MIRRORS = [
   'https://gh-proxy.net/' + GH_LATEST,
   'https://ghproxy.net/' + GH_LATEST,
@@ -171,7 +174,7 @@ async function pickFeed() {
   const proxy = await getSystemProxy();
   if (proxy) {
     const got = await Promise.race([
-      httpText(GH_LATEST + '/latest.yml', { timeout: 6000, proxy }),
+      httpText(GH_LATEST + '/' + FEED_FILE, { timeout: 6000, proxy }),
       new Promise((res) => setTimeout(() => res(null), 5000))
     ]);
     if (got && got.ok && /^version:\s*\d/m.test(got.text || '')) {
@@ -185,7 +188,7 @@ async function pickFeed() {
     const finish = (v) => { if (!settled) { settled = true; resolve(v); } };
     if (!tasks.length) return finish(null);
     tasks.forEach((t) => {
-      httpText(t.base + '/latest.yml', { timeout: 10000, proxy: t.proxy })
+      httpText(t.base + '/' + FEED_FILE, { timeout: 10000, proxy: t.proxy })
         .then((r) => {
           if (!settled && r.ok && /^version:\s*\d/m.test(r.text || '')) {
             const info = parseLatestYml(r.text);
