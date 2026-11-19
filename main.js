@@ -1495,6 +1495,39 @@ ipcMain.handle('notify:test', (e, p) => {
     }));
 });
 
+/* —— 阅卷截图留档 ——
+   只在评分失败 / 截错题这类异常时由渲染进程调用一次，平时不落盘，避免每份都写文件。
+   文件写到 userData/shots，保留最近 300 张。 */
+function shotsDir() {
+  const dir = path.join(app.getPath('userData'), 'shots');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+  return dir;
+}
+
+ipcMain.handle('shot:save', (e, p) => {
+  try {
+    const dataUrl = String((p && p.dataUrl) || '');
+    const m = /^data:image\/(\w+);base64,(.*)$/.exec(dataUrl);
+    if (!m) return { ok: false, error: '不是图片数据' };
+    const ext = m[1] === 'jpeg' ? 'jpg' : m[1];
+    const dir = shotsDir();
+    const t = new Date();
+    const stamp = t.getFullYear() + String(t.getMonth() + 1).padStart(2, '0') + String(t.getDate()).padStart(2, '0')
+      + '-' + String(t.getHours()).padStart(2, '0') + String(t.getMinutes()).padStart(2, '0') + String(t.getSeconds()).padStart(2, '0');
+    const name = stamp + '_' + String((p && p.no) || 0).padStart(2, '0') + '.' + ext;
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, Buffer.from(m[2], 'base64'));
+    try {
+      const files = fs.readdirSync(dir).filter((f) => /\.(png|jpg|jpeg)$/i.test(f)).sort();
+      const drop = files.length - 300;
+      if (drop > 0) for (const f of files.slice(0, drop)) { try { fs.unlinkSync(path.join(dir, f)); } catch (_) {} }
+    } catch (_) {}
+    return { ok: true, file, dir };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
 app.whenReady().then(() => {
   createWindow();
   app.on('activate', () => {

@@ -2223,6 +2223,13 @@ async function captureAreaRaw(){
   if(r && r.error) throw new Error(r.error);
   return r.dataUrl;
 }
+/* 平时不落盘，只在评分失败 / 截错题时留一张现场图，便于事后复查 */
+async function saveShotOnError(shot, n, why){
+  try{
+    const sv = await window.YJAI.saveShot({ dataUrl: shot, no: n });
+    if(sv && sv.ok) brLog('本份截图已留档（'+why+'）：'+sv.file, 'w');
+  }catch(e){}
+}
 async function testShot(){
   if(!brState.area){ toast('请先框选答题区域','err'); return null; }
   brSetStatus('截图中…');
@@ -2492,12 +2499,21 @@ async function gradeImageByStandard(base64Image){
   const text = '【科目】'+subject+'\n【阅卷模式】'+mode+'\n【本题满分】'+full+' 分\n【评分标准】\n'+(criteria||'（未提供）')+chemRule
     + '\n\n【学生作答转录】下面这段是另一个环节照着答卷截图逐字抄下来的，? 表示字迹无法辨认：\n'+trText
     + '\n\n【判分要求】\n'
-    + '1. 逐个小问给分，每个评分点单独一条；max 按评分标准里该小问的分值填写；\n'
-    + '2. evidence 必须引用上面转录的原文，不能改写；\n'
-    + '3. 转录里含 ? 的小问，awarded 记 0，reason 写「字迹不清，需复核」；转录为（空白）的按未作答处理；\n'
-    + '4. 学生写什么就按什么判。和参考答案不一致就是不一致，不得把学生答案往参考答案上靠，也不得替学生补全；\n'
-    + '5. score 必须等于 details 里 awarded 之和。\n'
-    + '【输出】严格输出 JSON：\n{"details":[{"no":"(1)","max":2,"awarded":2,"evidence":"C","reason":"与参考答案一致"}],"score":数字,"comment":"评语(1~2句)"}';
+    + '0. 先做一致性检查：【学生作答转录】与【评分标准】是否属于同一道题（学科、考点、题号体系是否对得上）。'
+    + '若明显是两道不同的题（例如标准是化学、转录内容却是物理的电磁感应/磁通量），match 填 "different"，所有小问 awarded 记 0；'
+    + '学生只是答错、答非所问、或答了别的科目内容但题还是同一道，仍填 "same"，不要因为答错就判 different；\n'
+    + '1. 逐个小问、逐个给分点判分。每个小问先把【评分标准】里对应小问的参考答案原样摘到 expect 字段（多个答案用 / 分隔）；max 按该小问在标准里的分值填写；\n'
+    + '2. evidence 必须逐字引用转录原文，不能改写、不能补全、不能只写「同上」；\n'
+    + '3. 然后做【逐字比对】：把 evidence 与 expect 一个字一个字地对齐比较，逐项确认差异——'
+    + '数字与下标/系数的位置（3Fe 与 Fe3 不是一回事）、上下标与电荷（Fe³⁺、SO₄²⁻）、元素符号大小写（CO 与 Co）、'
+    + '单位、正负号、小数点、书写顺序、方程式是否配平、反应条件与 ↑↓、文字表述是否等价。'
+    + '比对结论写进 reason，格式：「逐字比对：学生『X』／标准『Y』，差异在……」，相同则写「逐字一致」；\n'
+    + '4. 比对完再按【评分标准】的给分点给分：完全一致给满分；部分一致按标准里写明的部分分给（例如「AB 得 2 分，漏选得 1 分」必须照给）；'
+    + '标准没写部分分的，不给部分分。评分标准优先于主观宽严判断；\n'
+    + '5. 转录里含 ? 的小问，awarded 记 0，reason 写「字迹不清，需复核」；转录为（空白）的按未作答处理；\n'
+    + '6. 不得把学生答案往参考答案上靠，也不得替学生补全。学生写的和标准不同就是不同；\n'
+    + '7. score 必须等于 details 里 awarded 之和。\n'
+    + '【输出】严格输出 JSON：\n{"match":"same","details":[{"no":"(1)","max":2,"expect":"标准答案原文","awarded":2,"evidence":"学生原文","reason":"逐字比对：…"}],"score":数字,"comment":"评语(1~2句)"}';
   const messages = [
     { role:'system', content:'你是一位严谨、公正的阅卷老师。你必须只输出一个合法的 JSON 对象，不要输出任何其他文字。' },
     { role:'user', content:text }
@@ -2507,9 +2523,17 @@ async function gradeImageByStandard(base64Image){
 
   const fullN = Number(full);
   const cap = (isFinite(fullN) && fullN > 0) ? fullN : Infinity;
-  // 字迹不清的小问由程序强制 0 分，不依赖模型自觉
-  const unclear = new Map();
-  tr.items.forEach(it=>{ if(/[?？]/.test(it.raw || '') || it.uncertain) unclear.set(normSubNo(it.no), it); });
+  // 字迹不清分两档处理：
+  //   unreadable —— 整条都没读出来（全是 ?），程序强制 0 分；
+  //   blurry     —— 只错几个字，保留模型给分，仅标注需复核。
+  // 早先只要出现一个 ? 就把整个小问归零，手写稍潦草就等于全错，这是"准确率下降"的直接来源之一。
+  const unreadable = new Map(), blurry = new Map();
+  tr.items.forEach(it=>{
+    const key = normSubNo(it.no);
+    const raw = String(it.raw==null ? '' : it.raw);
+    if(raw !== '' && /^[?？\s.。,，·、]+$/.test(raw)) unreadable.set(key, it);
+    else if(/[?？]/.test(raw) || it.uncertain) blurry.set(key, it);
+  });
 
   let details = Array.isArray(j.details) ? j.details : [];
   details = details.map(d=>{
@@ -2518,13 +2542,19 @@ async function gradeImageByStandard(base64Image){
     let awarded = Number(d && d.awarded);
     if(!isFinite(awarded)) awarded = 0;
     awarded = Math.min(Math.max(awarded, 0), max);
-    const hit = unclear.get(normSubNo(d && d.no));
-    if(hit){ awarded = 0; }
+    const key = normSubNo(d && d.no);
+    const hard = unreadable.get(key), soft = blurry.get(key);
+    if(hard){ awarded = 0; }
     const no = String((d&&d.no)||'');
     const evidence = String((d&&d.evidence)||'');
-    const reason = hit ? ('字迹不清（转录为 '+(hit.raw||'?')+'），需复核') : String((d&&d.reason)||'');
+    const expect = String((d&&d.expect)||'');
+    const baseReason = String((d&&d.reason)||'');
+    const reason = hard ? ('字迹完全无法辨认（转录为 '+(hard.raw||'?')+'），需复核')
+                 : soft ? (baseReason || '得分正常') + '（含辨认不清的字符：'+String(soft.raw||'?')+'，需复核）'
+                 : baseReason;
     // point/comment 是历史记录页沿用的字段名，一并给出，避免明细显示成空行
-    return { no:no, max:max, awarded:awarded, evidence:evidence, reason:reason,
+    // expect 保留标准的参考答案原文，配合 evidence 就能看出「学生写的」与「标准要求」差在哪
+    return { no:no, max:max, awarded:awarded, expect:expect, evidence:evidence, reason:reason,
              point:(no+' '+evidence).trim(), comment:reason };
   });
 
@@ -2541,7 +2571,11 @@ async function gradeImageByStandard(base64Image){
   }
   if(!isFinite(score)) score = 0;
   score = isFinite(cap) ? Math.min(Math.max(score, 0), cap) : Math.max(score, 0);
-  return { score: score, comment: String(j.comment||''), details: details, transcript: tr, review: unclear.size>0 };
+  // 图里的作答和评分标准根本不是同一道题：多半是页面滚动/框选偏移，截到了别的题。
+  // 这时任何分数都是错的，交上去等于给别的题打分，所以只标记、由外层中止且不提交。
+  const mismatch = String(j.match==null ? '' : j.match).trim().toLowerCase() === 'different';
+  return { score: score, comment: String(j.comment||''), details: details, transcript: tr,
+           review: (unreadable.size + blurry.size) > 0, mismatch: mismatch };
 }
 async function startAuto(){
   if(!state.settings.apiKey){ toast('请先在「设置」中配置 API Key','err'); switchView('settings'); return; }
@@ -2578,15 +2612,29 @@ async function startAuto(){
     brSetStatus('第 '+n+' 份：AI 评分中…');
     brLog('第 '+n+' 份：AI 评分中…');
     let result;
-    try{ result = await gradeImageByStandard(shot); }catch(e){ brLog('评分失败: '+e.message,'e'); await sleep(800); continue; }
+    try{ result = await gradeImageByStandard(shot); }
+    catch(e){ brLog('评分失败: '+e.message,'e'); await saveShotOnError(shot, n, '评分失败'); await sleep(800); continue; }
     // 把模型实际读到的字和逐小问得分打出来，判错时才有据可查
     if(result.transcript && result.transcript.items.length){
       brLog('识别：' + result.transcript.items.map(it=>(it.no||'')+'='+(it.raw==='' ? '空' : it.raw)).join('　'), 'i');
     }
-    if(result.details && result.details.length){
-      brLog('小问：' + result.details.map(d=>d.no+' '+d.awarded+'/'+d.max).join('　'), 'i');
+    // 截到的不是这道题（页面滚动 / 框选偏移）：绝不提交，直接停下等人处理
+    if(result.mismatch){
+      brLog('✗ 截到的不是这道题，已停止且未提交', 'e');
+      brLog('   图为：' + (result.transcript.items.map(it=>(it.raw||'空')).join(' / ').slice(0,120)), 'e');
+      await saveShotOnError(shot, n, '截错题');
+      brSetStatus('已停止：截图与评分标准不是同一道题');
+      brState.stopReason = '第 '+n+' 份：截图内容与评分标准不是同一道题（多半是页面滚动或框选偏移），已停止未提交';
+      break;
     }
-    if(result.review) brLog('⚠ 有字迹不清的小问，已记 0 分并标注需复核', 'w');
+    if(result.details && result.details.length){
+      // 未满分的把学生答案一并打出来，老师一眼能看出差在哪
+      brLog('小问：' + result.details.map(d=>{
+        const tail = (d.awarded < d.max && d.evidence) ? ('（' + String(d.evidence).slice(0,14) + '）') : '';
+        return d.no+' '+d.awarded+'/'+d.max + tail;
+      }).join('　'), 'i');
+    }
+    if(result.review) brLog('⚠ 有字迹不清的小问，已标注需复核', 'w');
     brSetStatus('第 '+n+' 份：得分 '+result.score+'，提交中…');
     brLog('第 '+n+' 份：得分 '+result.score+'，提交中…');
     const okFill = await fillScoreInPage(result.score);

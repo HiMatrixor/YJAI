@@ -36,5 +36,8 @@ contextBridge.exposeInMainWorld('YJAI', {
 
   // —— 结束提醒（电脑通知 + 手机推送） ——
   notifyDone: (payload) => ipcRenderer.invoke('notify:done', payload),
-  notifyTest: (payload) => ipcRenderer.invoke('notify:test', payload)
+  notifyTest: (payload) => ipcRenderer.invoke('notify:test', payload),
+
+  // —— 阅卷截图留存（核对 AI 实际看到的图） ——
+  saveShot: (payload) => ipcRenderer.invoke('shot:save', payload)
 });

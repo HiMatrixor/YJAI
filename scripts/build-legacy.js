@@ -9,11 +9,14 @@ const { spawnSync } = require('child_process');
 const path = require('path');
 
 const cli = require.resolve('electron-builder/out/cli/cli.js');
+// 输出目录可用 YJAI_OUT 覆盖：旧目录里的 app.asar 有时会被杀软/索引服务锁住，
+// 这时 electron-builder 清空 appOutDir 会报 "being used by another process"，换个目录即可。
+const outDir = process.env.YJAI_OUT || 'dist-ia32';
 const args = [
   cli,
   '--win', 'nsis:ia32',
   '-c.electronVersion=22.3.27',
-  '-c.directories.output=dist-ia32',
+  '-c.directories.output=' + outDir,
   '-c.win.artifactName=YJAI-Setup-${version}-ia32.${ext}'
 ];
 
